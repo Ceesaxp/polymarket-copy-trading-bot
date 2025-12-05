@@ -267,6 +267,12 @@ npx tsc --noEmit
 
 ---
 
+## Contact
+
+For questions, support, or collaboration, reach out on Telegram: [@terauss](https://t.me/terauss)
+
+---
+
 ## License
 
 MIT License.
