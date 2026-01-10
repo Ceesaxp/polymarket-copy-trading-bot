@@ -26,7 +26,7 @@ The bot monitors blockchain events for trades made by a specific "whale" (succes
 - **Intelligent Pricing:** Price buffers optimize fill rates while minimizing slippage
 - **Automatic Retries:** Resubmission logic maximizes fill rates
 
-For complete strategy details, see [Trading Strategy Guide](STRATEGY.md).
+For complete strategy details, see [Trading Strategy Guide](05_STRATEGY.md).
 
 ## 2. Core Features
 
@@ -226,7 +226,7 @@ Protects you from copying trades in dangerous conditions:
 
 ## 3. Trading Flow (Step-by-Step)
 
-This is a simplified overview. For complete detailed logic, see [Strategy Guide](STRATEGY.md).
+This is a simplified overview. For complete detailed logic, see [Strategy Guide](05_STRATEGY.md).
 
 1. **Detection:** Whale makes trade on Polymarket
 2. **Event Received:** Bot receives blockchain event via WebSocket (<1 second latency)
@@ -341,8 +341,8 @@ All trades are logged with: timestamp, block, token_id, usd_value, shares, price
 
 ## 8. Next Steps
 
-- Read [Configuration Guide](CONFIGURATION.md) to adjust settings
-- Review [Trading Strategy Guide](STRATEGY.md) for detailed strategy logic
-- Check [Setup Guide](SETUP_GUIDE.md) if you haven't set up yet
-- Review [Troubleshooting](TROUBLESHOOTING.md) if you have issues
+- Read [Configuration Guide](03_CONFIGURATION.md) to adjust settings
+- Review [Trading Strategy Guide](05_STRATEGY.md) for detailed strategy logic
+- Check [Setup Guide](02_SETUP_GUIDE.md) if you haven't set up yet
+- Review [Troubleshooting](06_TROUBLESHOOTING.md) if you have issues
 

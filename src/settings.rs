@@ -206,7 +206,7 @@ impl Config {
     /// # Errors
     /// 
     /// Returns errors with helpful messages if required configuration is missing or invalid.
-    /// For detailed setup help, see docs/SETUP_GUIDE.md
+    /// For detailed setup help, see docs/02_SETUP_GUIDE.md
     pub fn from_env() -> Result<Self> {
         // Check if .env file exists (helpful error for beginners)
         if !Path::new(".env").exists() {
@@ -217,7 +217,7 @@ impl Config {
                 1. Copy .env.example to .env\n\
                 2. Open .env in a text editor\n\
                 3. Fill in your configuration values\n\
-                4. See docs/SETUP_GUIDE.md for detailed instructions\n\
+                    4. See docs/02_SETUP_GUIDE.md for detailed instructions\n\
                 \n\
                 Quick check: Run 'cargo run --release --bin check_config' to validate your setup"
             );

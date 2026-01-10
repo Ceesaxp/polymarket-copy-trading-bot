@@ -290,7 +290,7 @@ cargo run --release
 - No actual trades are placed
 
 **If you see errors:**
-- Check [Troubleshooting Guide](TROUBLESHOOTING.md)
+- Check [Troubleshooting Guide](06_TROUBLESHOOTING.md)
 - Verify your API key is correct
 - Make sure your addresses are correct format
 
@@ -345,9 +345,9 @@ You'll see messages like:
 
 ## 9. Next Steps
 
-- Read [Features Guide](FEATURES.md) to understand what the bot does
-- Adjust [Configuration](CONFIGURATION.md) settings as needed
-- Check [Troubleshooting](TROUBLESHOOTING.md) if you have issues
+- Read [Features Guide](04_FEATURES.md) to understand what the bot does
+- Adjust [Configuration](03_CONFIGURATION.md) settings as needed
+- Check [Troubleshooting](06_TROUBLESHOOTING.md) if you have issues
 
 ---
 
@@ -367,7 +367,7 @@ Before running with real money:
 
 ## 11. Need Help?
 
-1. Check [Troubleshooting Guide](TROUBLESHOOTING.md)
+1. Check [Troubleshooting Guide](06_TROUBLESHOOTING.md)
 2. Verify your configuration with `validate_setup`
 3. Review error messages carefully
 4. Make sure all prerequisites are installed

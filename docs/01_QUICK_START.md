@@ -84,11 +84,11 @@ Just double-click `run.bat` after setting up `.env`!
 
 ## 5. Need More Help?
 
-- **Detailed Setup:** See [SETUP_GUIDE.md](SETUP_GUIDE.md)
-- **Configuration Options:** See [CONFIGURATION.md](CONFIGURATION.md)
-- **Problems?** See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
-- **How It Works:** See [FEATURES.md](FEATURES.md)
-- **Strategy Logic:** See [STRATEGY.md](STRATEGY.md)
+- **Detailed Setup:** See [02_SETUP_GUIDE.md](02_SETUP_GUIDE.md)
+- **Configuration Options:** See [03_CONFIGURATION.md](03_CONFIGURATION.md)
+- **Problems?** See [06_TROUBLESHOOTING.md](06_TROUBLESHOOTING.md)
+- **How It Works:** See [04_FEATURES.md](04_FEATURES.md)
+- **Strategy Logic:** See [05_STRATEGY.md](05_STRATEGY.md)
 
 ## 6. Safety Reminders
 

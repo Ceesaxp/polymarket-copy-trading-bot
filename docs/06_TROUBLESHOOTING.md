@@ -489,8 +489,8 @@ TARGET_WHALE_ADDRESS=204f72f35326db932158cba6adff0b9a1da95e14
    - Test with defaults
 
 4. **Read documentation:**
-   - Review [Features Guide](FEATURES.md)
-   - Check [Configuration Guide](CONFIGURATION.md)
+   - Review [Features Guide](04_FEATURES.md)
+   - Check [Configuration Guide](03_CONFIGURATION.md)
    - Understand expected behavior
 
 ---
@@ -562,7 +562,7 @@ If you've tried these solutions and still have issues:
 ---
 
 For additional help, see:
-- [Setup Guide](SETUP_GUIDE.md)
-- [Configuration Guide](CONFIGURATION.md)
-- [Features Guide](FEATURES.md)
+- [Setup Guide](02_SETUP_GUIDE.md)
+- [Configuration Guide](03_CONFIGURATION.md)
+- [Features Guide](04_FEATURES.md)
 

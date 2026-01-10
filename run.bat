@@ -15,7 +15,7 @@ if not exist .env (
     echo   1. Copy .env.example to .env
     echo   2. Open .env in a text editor
     echo   3. Fill in your configuration values
-    echo   4. See docs/SETUP_GUIDE.md for help
+    echo   4. See docs/02_SETUP_GUIDE.md for help
     echo.
     pause
     exit /b 1
@@ -28,7 +28,7 @@ cargo run --release --bin validate_setup
 if %errorlevel% neq 0 (
     echo.
     echo Configuration check failed! Please fix the errors above.
-    echo See docs/TROUBLESHOOTING.md for help.
+    echo See docs/06_TROUBLESHOOTING.md for help.
     echo.
     pause
     exit /b 1
@@ -41,7 +41,7 @@ cargo build --release
 if %errorlevel% neq 0 (
     echo.
     echo Build failed! Please check the errors above.
-    echo See docs/TROUBLESHOOTING.md for help.
+    echo See docs/06_TROUBLESHOOTING.md for help.
     echo.
     pause
     exit /b 1

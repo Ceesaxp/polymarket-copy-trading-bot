@@ -360,5 +360,5 @@ This checks:
 **Problem:** Circuit breaker blocks all trades
 - **Solution:** Adjust `CB_MIN_DEPTH_USD` lower or `CB_CONSECUTIVE_TRIGGER` higher
 
-For more help, see [Troubleshooting Guide](TROUBLESHOOTING.md).
+For more help, see [Troubleshooting Guide](06_TROUBLESHOOTING.md).
 

@@ -54,13 +54,13 @@ cd Polymarket-Copy-Trading-Bot
 
 2. Open `.env` in any text editor (Notepad, VS Code, etc.)
 
-3. Fill in the required values (see [Configuration Guide](docs/CONFIGURATION.md) for details):
+3. Fill in the required values (see [Configuration Guide](docs/03_CONFIGURATION.md) for details):
    - `PRIVATE_KEY` - Your wallet's private key (keep this SECRET!)
    - `FUNDER_ADDRESS` - Your wallet address (same wallet as private key)
    - `TARGET_WHALE_ADDRESS` - The whale address you want to copy (40-char hex, no 0x)
    - `ALCHEMY_API_KEY` - Get from https://www.alchemy.com/ (or use CHAINSTACK_API_KEY)
 
-4. Optional: Adjust trading settings (see [Configuration Guide](docs/CONFIGURATION.md))
+4. Optional: Adjust trading settings (see [Configuration Guide](docs/03_CONFIGURATION.md))
 
 ### 1.4 Step 4: Validate Your Configuration
 
@@ -94,12 +94,12 @@ cargo run --release
 
 ## 2. Documentation
 
-- **[Quick Start Guide](docs/QUICK_START.md)** - 5-minute setup guide
-- **[Complete Setup Guide](docs/SETUP_GUIDE.md)** - Detailed step-by-step instructions
-- **[Configuration Guide](docs/CONFIGURATION.md)** - All settings explained
-- **[Features Overview](docs/FEATURES.md)** - What the bot does and how it works
-- **[Trading Strategy](docs/STRATEGY.md)** - Complete strategy logic and decision-making
-- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+- **[01. Quick Start Guide](docs/01_QUICK_START.md)** - 5-minute setup guide
+- **[02. Complete Setup Guide](docs/02_SETUP_GUIDE.md)** - Detailed step-by-step instructions
+- **[03. Configuration Guide](docs/03_CONFIGURATION.md)** - All settings explained
+- **[04. Features Overview](docs/04_FEATURES.md)** - What the bot does and how it works
+- **[05. Trading Strategy](docs/05_STRATEGY.md)** - Complete strategy logic and decision-making
+- **[06. Troubleshooting](docs/06_TROUBLESHOOTING.md)** - Common issues and solutions
 
 ## 3. Requirements
 
@@ -140,7 +140,7 @@ cargo run --release
 - **Intelligent Pricing:** Price buffers optimize fill rates (higher for large trades, none for small)
 - **Sport-Specific Adjustments:** Additional buffers for tennis and soccer markets
 
-See [Features Overview](docs/FEATURES.md) for feature details and [Strategy Guide](docs/STRATEGY.md) for complete trading logic.
+See [Features Overview](docs/04_FEATURES.md) for feature details and [Strategy Guide](docs/05_STRATEGY.md) for complete trading logic.
 
 ## 6. Features
 
@@ -189,11 +189,11 @@ cargo build --release
 
 ## 9. Getting Help
 
-1. Check [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+1. Check [Troubleshooting Guide](docs/06_TROUBLESHOOTING.md)
 2. Run the config validator: `cargo run --release --bin validate_setup`
 3. Review your `.env` file against `.env.example`
 4. Check console output for error messages
-5. Review [Strategy Guide](docs/STRATEGY.md) to understand bot logic
+5. Review [Strategy Guide](docs/05_STRATEGY.md) to understand bot logic
 
 ## 10. Disclaimer
 

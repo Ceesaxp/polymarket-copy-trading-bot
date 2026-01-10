@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     }
     
     if !errors.is_empty() {
-        println!("📖 Need help? See docs/SETUP_GUIDE.md\n");
+        println!("📖 Need help? See docs/02_SETUP_GUIDE.md\n");
         anyhow::bail!("Configuration errors found. Please fix the errors above.");
     }
     

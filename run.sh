@@ -18,7 +18,7 @@ if [ ! -f .env ]; then
     echo "     cp .env.example .env"
     echo "  2. Open .env in a text editor"
     echo "  3. Fill in your configuration values"
-    echo "  4. See docs/SETUP_GUIDE.md for help"
+    echo "  4. See docs/02_SETUP_GUIDE.md for help"
     echo ""
     exit 1
 fi
@@ -29,7 +29,7 @@ echo ""
 cargo run --release --bin validate_setup || {
     echo ""
     echo "Configuration check failed! Please fix the errors above."
-    echo "See docs/TROUBLESHOOTING.md for help."
+    echo "See docs/06_TROUBLESHOOTING.md for help."
     echo ""
     exit 1
 }
@@ -40,7 +40,7 @@ echo ""
 cargo build --release || {
     echo ""
     echo "Build failed! Please check the errors above."
-    echo "See docs/TROUBLESHOOTING.md for help."
+    echo "See docs/06_TROUBLESHOOTING.md for help."
     echo ""
     exit 1
 }
