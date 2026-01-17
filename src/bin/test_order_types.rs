@@ -8,7 +8,7 @@
 
 use anyhow::{Result, anyhow};
 use dotenvy::dotenv;
-use rust_clob_client::{ApiCreds, OrderArgs, RustClobClient, PreparedCreds};
+use pm_whale_follower::{ApiCreds, OrderArgs, RustClobClient, PreparedCreds, OrderResponse};
 use std::path::Path;
 
 const CLOB_API_BASE: &str = "https://clob.polymarket.com";
@@ -55,13 +55,19 @@ fn main() -> Result<()> {
     dotenv().ok();
 
     let private_key = std::env::var("PRIVATE_KEY")?;
-    let funder = std::env::var("FUNDER_ADDRESS")?;
+    // Optional: if USE_SEPARATE_FUNDER is set and FUNDER_ADDRESS provided, use it
+    // Otherwise funder is derived from private key (recommended)
+    let funder = if std::env::var("USE_SEPARATE_FUNDER").is_ok() {
+        std::env::var("FUNDER_ADDRESS").ok()
+    } else {
+        None
+    };
 
     println!("🧪 FAK Response Test");
     println!("====================\n");
 
     // Build client
-    let mut client = RustClobClient::new(CLOB_API_BASE, 137, &private_key, &funder)?
+    let mut client = RustClobClient::new(CLOB_API_BASE, 137, &private_key, funder.as_deref())?
         .with_cache_path(".clob_market_cache.json");
     let _ = client.load_cache();
 
@@ -121,7 +127,7 @@ fn main() -> Result<()> {
     println!("   Body: {}\n", body_text);
 
     // Try to parse as OrderResponse
-    if let Ok(parsed) = serde_json::from_str::<rust_clob_client::OrderResponse>(&body_text) {
+    if let Ok(parsed) = serde_json::from_str::<OrderResponse>(&body_text) {
         println!("✅ Parsed OrderResponse:");
         println!("   success: {}", parsed.success);
         println!("   errorMsg: \"{}\"", parsed.error_msg);

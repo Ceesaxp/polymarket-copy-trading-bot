@@ -183,16 +183,18 @@ pub fn get_tier_params(whale_shares: f64, side_is_buy: bool, token_id: &str) -> 
 pub struct Config {
     // Credentials
     pub private_key: String,
-    pub funder_address: String,
-    
+    /// Optional separate funder address. If None, funder is derived from private_key.
+    /// Only set this if you have delegation configured on Polymarket.
+    pub funder_address: Option<String>,
+
     // WebSocket
     pub wss_url: String,
-    
+
     // Trading flags
     pub enable_trading: bool,
     pub mock_trading: bool,
-    
-    // Circuit breaker
+
+    // Risk guard (circuit breaker)
     pub cb_large_trade_shares: f64,
     pub cb_consecutive_trigger: u8,
     pub cb_sequence_window_secs: u64,
@@ -241,25 +243,40 @@ impl Config {
         if !key_clean.chars().all(|c| c.is_ascii_hexdigit()) {
             anyhow::bail!("PRIVATE_KEY contains invalid characters. Must be hexadecimal (0-9, a-f, A-F).");
         }
-        
-        let funder_address = env::var("FUNDER_ADDRESS")
-            .context("FUNDER_ADDRESS env var is required. Add it to your .env file.\n\
-                     Format: 40-character hex address (can include 0x prefix)\n\
-                     This should match the wallet from your PRIVATE_KEY")?;
-        
-        // Validate funder address format
-        let addr_clean = funder_address.trim().strip_prefix("0x").unwrap_or(funder_address.trim());
-        if addr_clean.len() != 40 {
-            anyhow::bail!(
-                "FUNDER_ADDRESS must be exactly 40 hex characters (found {}).\n\
-                Current value: {}",
-                addr_clean.len(),
-                if addr_clean.len() > 20 { format!("{}...", &addr_clean[..20]) } else { addr_clean.to_string() }
-            );
-        }
-        if !addr_clean.chars().all(|c| c.is_ascii_hexdigit()) {
-            anyhow::bail!("FUNDER_ADDRESS contains invalid characters. Must be hexadecimal (0-9, a-f, A-F).");
-        }
+
+        // Check if user wants to use a separate funder address (advanced use case with delegation)
+        let use_separate_funder = env::var("USE_SEPARATE_FUNDER")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
+        let funder_address = if use_separate_funder {
+            // Separate funder mode: require and validate FUNDER_ADDRESS
+            let funder_raw = env::var("FUNDER_ADDRESS")
+                .context("USE_SEPARATE_FUNDER=true but FUNDER_ADDRESS not set.\n\
+                         Set FUNDER_ADDRESS to your delegated funder wallet address,\n\
+                         or remove USE_SEPARATE_FUNDER to derive funder from PRIVATE_KEY.")?;
+
+            // Trim whitespace and normalize the address
+            let funder = funder_raw.trim().to_string();
+
+            // Validate funder address format
+            let addr_clean = funder.strip_prefix("0x").unwrap_or(&funder);
+            if addr_clean.len() != 40 {
+                anyhow::bail!(
+                    "FUNDER_ADDRESS must be exactly 40 hex characters (found {}).\n\
+                    Current value: {}",
+                    addr_clean.len(),
+                    if addr_clean.len() > 20 { format!("{}...", &addr_clean[..20]) } else { addr_clean.to_string() }
+                );
+            }
+            if !addr_clean.chars().all(|c| c.is_ascii_hexdigit()) {
+                anyhow::bail!("FUNDER_ADDRESS contains invalid characters. Must be hexadecimal (0-9, a-f, A-F).");
+            }
+            Some(funder)
+        } else {
+            // Default mode: funder will be derived from private key (recommended)
+            None
+        };
         
         // WebSocket URL from either provider
         let wss_url = if let Ok(key) = env::var("ALCHEMY_API_KEY") {

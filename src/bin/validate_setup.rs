@@ -4,7 +4,7 @@
 //! Checks if all required environment variables are set correctly
 //! and provides helpful error messages for beginners.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dotenvy::dotenv;
 use std::env;
 
@@ -107,20 +107,29 @@ fn check_private_key(errors: &mut Vec<String>) {
 }
 
 fn check_funder_address(errors: &mut Vec<String>) {
+    // FUNDER_ADDRESS is optional - only used if USE_SEPARATE_FUNDER is set
+    let use_separate_funder = env::var("USE_SEPARATE_FUNDER").is_ok();
+
+    if !use_separate_funder {
+        println!("  ✅ FUNDER_ADDRESS: Not required (derived from PRIVATE_KEY)");
+        return;
+    }
+
+    // If USE_SEPARATE_FUNDER is set, validate FUNDER_ADDRESS
     match env::var("FUNDER_ADDRESS") {
         Ok(addr) => {
             let addr = addr.trim();
-            
+
             if addr.is_empty() || addr == "your_wallet_address_here" {
                 errors.push(
-                    "FUNDER_ADDRESS is not set or still has placeholder value".to_string()
+                    "USE_SEPARATE_FUNDER is set but FUNDER_ADDRESS is not configured".to_string()
                 );
                 return;
             }
-            
+
             // Remove 0x prefix for validation
             let addr_clean = addr.strip_prefix("0x").unwrap_or(addr);
-            
+
             if addr_clean.len() != 40 {
                 errors.push(format!(
                     "FUNDER_ADDRESS must be exactly 40 hex characters (found {} chars after removing '0x').",
@@ -128,19 +137,19 @@ fn check_funder_address(errors: &mut Vec<String>) {
                 ));
                 return;
             }
-            
+
             if !addr_clean.chars().all(|c| c.is_ascii_hexdigit()) {
                 errors.push(
                     "FUNDER_ADDRESS contains invalid characters. Must be hexadecimal (0-9, a-f, A-F).".to_string()
                 );
                 return;
             }
-            
-            println!("  ✅ FUNDER_ADDRESS: Valid format");
+
+            println!("  ✅ FUNDER_ADDRESS: Valid format (separate funder mode)");
         }
         Err(_) => {
             errors.push(
-                "FUNDER_ADDRESS is required. Add it to your .env file. This should match your PRIVATE_KEY wallet.".to_string()
+                "USE_SEPARATE_FUNDER is set but FUNDER_ADDRESS is missing. Either set FUNDER_ADDRESS or remove USE_SEPARATE_FUNDER.".to_string()
             );
         }
     }

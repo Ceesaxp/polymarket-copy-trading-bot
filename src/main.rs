@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     // Start background cache refresh task
     let _cache_refresh_handle = market_cache::spawn_cache_refresh_task();
 
-    let cfg = Settings::from_env()?;
+    let cfg = Config::from_env()?;
     
     let (client, creds) = build_worker_state(
         cfg.private_key.clone(),
@@ -134,7 +134,7 @@ async fn main() -> Result<()> {
 
 async fn build_worker_state(
     private_key: String,
-    funder: String,
+    funder: Option<String>,
     cache_path: &str,
     creds_path: &str,
 ) -> Result<(RustClobClient, ApiCreds)> {
@@ -143,10 +143,10 @@ async fn build_worker_state(
     let host = CLOB_API_BASE.to_string();
 
     tokio::task::spawn_blocking(move || -> Result<(RustClobClient, ApiCreds)> {
-        let mut client = RustClobClient::new(&host, 137, &private_key, &funder)?
+        let mut client = RustClobClient::new(&host, 137, &private_key, funder.as_deref())?
             .with_cache_path(&cache_path);
         let _ = client.load_cache();
-        
+
         let _ = client.prewarm_connections();
 
         let creds: ApiCreds = if Path::new(&creds_path).exists() {
@@ -274,6 +274,17 @@ fn process_order(
         Ok(resp) => {
             let status = resp.status();
             let body_text = resp.text().unwrap_or_default();
+
+            // Verbose logging for response body
+            if std::env::var("VERBOSE_ORDER_LOG").is_ok() {
+                eprintln!("\n📥 Response Body:");
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body_text) {
+                    eprintln!("{}", serde_json::to_string_pretty(&json).unwrap_or(body_text.clone()));
+                } else {
+                    eprintln!("{}", body_text);
+                }
+                eprintln!();
+            }
 
             let order_resp: Option<OrderResponse> = if status.is_success() {
                 serde_json::from_str(&body_text).ok()
@@ -471,6 +482,9 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
     ws.send(Message::Text(sub)).await?;
 
     let http_client = reqwest::Client::builder().no_proxy().build()?;
+    let mut subscription_confirmed = false;
+    let mut last_heartbeat = std::time::Instant::now();
+    let heartbeat_interval = Duration::from_secs(60);
 
     loop {
         let msg = tokio::time::timeout(WS_PING_TIMEOUT, ws.next()).await
@@ -479,6 +493,16 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
 
         match msg {
             Message::Text(text) => {
+                // Check for subscription confirmation (first message after subscribing)
+                if !subscription_confirmed {
+                    if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                        if v.get("id").and_then(|i| i.as_i64()) == Some(1) && v.get("result").is_some() {
+                            subscription_confirmed = true;
+                            println!("✅ Subscription confirmed. Listening for whale trades...");
+                        }
+                    }
+                }
+
                 if let Some(evt) = parse_event(text) {
                     let engine = order_engine.clone();
                     let client = http_client.clone();
@@ -497,6 +521,12 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
             Message::Ping(d) => { ws.send(Message::Pong(d)).await?; }
             Message::Close(f) => return Err(anyhow!("WS closed: {:?}", f)),
             _ => {}
+        }
+
+        // Periodic heartbeat to show bot is alive
+        if last_heartbeat.elapsed() >= heartbeat_interval {
+            println!("💓 Heartbeat: listening for trades...");
+            last_heartbeat = std::time::Instant::now();
         }
     }
 }

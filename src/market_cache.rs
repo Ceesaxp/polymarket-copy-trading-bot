@@ -22,8 +22,8 @@ const LIGUE1_TOKENS_CACHE_PATH: &str = ".ligue1_tokens.json";
 const LIVE_CACHE_PATH: &str = ".live_cache.json";
 
 /// Price buffer adjustments for specialized markets
-const TENNIS_BUFFER: f64 = 0.01;
-const SOCCER_BUFFER: f64 = 0.01;
+const ATP_BUFFER: f64 = 0.01;
+const LIGUE1_BUFFER: f64 = 0.01;
 
 // ============================================================================
 // Cache Data Structures
@@ -36,9 +36,9 @@ pub struct MarketCaches {
     /// Token ID -> market slug
     pub slugs: RwLock<FxHashMap<String, String>>,
     /// Tennis (ATP) token IDs (for price buffer calculation)
-    pub tennis_tokens: RwLock<FxHashMap<String, String>>,
+    pub atp_tokens: RwLock<FxHashMap<String, String>>,
     /// Soccer (Ligue 1) token IDs (for price buffer calculation)
-    pub soccer_tokens: RwLock<FxHashMap<String, ()>>,
+    pub ligue1_tokens: RwLock<FxHashMap<String, ()>>,
     /// Token ID -> live status (for GTD expiry calculation)
     pub live_status: RwLock<FxHashMap<String, bool>>,
     /// Last refresh timestamp (Unix seconds)
@@ -51,8 +51,8 @@ pub struct MarketCaches {
 pub struct CacheStats {
     pub neg_risk_count: AtomicU64,
     pub slug_count: AtomicU64,
-    pub tennis_count: AtomicU64,
-    pub soccer_count: AtomicU64,
+    pub atp_count: AtomicU64,
+    pub ligue1_count: AtomicU64,
     pub live_count: AtomicU64,
     pub refresh_count: AtomicU64,
     pub last_refresh_duration_ms: AtomicU64,
@@ -383,9 +383,12 @@ mod tests {
     }
 
     #[test]
-    fn test_buffer_values() {
-        assert_eq!(ATP_BUFFER, 0.01);
-        assert_eq!(LIGUE1_BUFFER, 0.01);
+    fn test_buffer_constants() {
+        // Buffer constants should be defined
+        let _atp = ATP_BUFFER;
+        let _ligue1 = LIGUE1_BUFFER;
+        assert_eq!(_atp, 0.01);
+        assert_eq!(_ligue1, 0.01);
     }
 
     #[test]
