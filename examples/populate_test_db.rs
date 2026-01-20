@@ -22,6 +22,8 @@ fn make_trade(token_id: &str, side: &str, shares: f64, price: f64) -> TradeRecor
         status: "SUCCESS".to_string(),
         latency_ms: Some(85),
         is_live: Some(false),
+        aggregation_count: None,
+        aggregation_window_ms: None,
     }
 }
 

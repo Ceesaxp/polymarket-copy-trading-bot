@@ -35,6 +35,8 @@ fn test_trade_history_binary_with_data() {
             status: "SUCCESS".to_string(),
             latency_ms: Some(50),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         },
         TradeRecord {
             timestamp_ms: 1704067260000, // 2024-01-01 00:01:00
@@ -53,6 +55,8 @@ fn test_trade_history_binary_with_data() {
             status: "SUCCESS".to_string(),
             latency_ms: Some(75),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         },
         TradeRecord {
             timestamp_ms: 1704067320000, // 2024-01-01 00:02:00
@@ -71,6 +75,8 @@ fn test_trade_history_binary_with_data() {
             status: "FAILED".to_string(),
             latency_ms: Some(100),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         },
     ];
 

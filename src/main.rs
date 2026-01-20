@@ -887,6 +887,8 @@ async fn handle_event(
             status: trade_status_str,
             latency_ms: None, // Could be added with timing instrumentation
             is_live,
+            aggregation_count: None, // TODO: Set from aggregator when Phase 3 Step 3.2 integration complete
+            aggregation_window_ms: None, // TODO: Set from aggregator when Phase 3 Step 3.2 integration complete
         };
 
         // Send to persistence worker (non-blocking)

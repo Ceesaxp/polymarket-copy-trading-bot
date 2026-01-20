@@ -5,7 +5,7 @@
 
 mod store;
 
-pub use store::{TradeStore, TradeRecord, Position};
+pub use store::{TradeStore, TradeRecord, Position, AggregationStats};
 
 #[cfg(test)]
 mod tests {
@@ -119,6 +119,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(85),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         // Verify all fields are accessible and have correct values
@@ -160,6 +162,8 @@ mod tests {
             status: "FAILED".to_string(),
             latency_ms: Some(120),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         // Verify failed trade characteristics
@@ -190,6 +194,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(85),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let cloned = original.clone();
@@ -225,6 +231,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(85),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         // Insert the trade
@@ -273,6 +281,8 @@ mod tests {
             status: "SKIPPED".to_string(),
             latency_ms: None,
             is_live: Some(false),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         }
     }
 
@@ -296,6 +306,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(85),
             is_live: Some(false),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         }
     }
 
@@ -541,5 +553,288 @@ mod tests {
         assert_eq!(positions.len(), 1);
         let avg_price = positions[0].avg_entry_price.unwrap();
         assert!((avg_price - 0.55).abs() < 0.01, "Average entry price should be 0.55, got {}", avg_price);
+    }
+
+    // ============================================================================
+    // Aggregation Analytics Tests
+    // ============================================================================
+
+    #[test]
+    fn test_trade_record_with_aggregation_fields() {
+        // Test that TradeRecord can be constructed with aggregation fields
+        let record = TradeRecord {
+            timestamp_ms: 1706000000000,
+            block_number: 12345678,
+            tx_hash: "0xabc123def456".to_string(),
+            trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            token_id: "123456".to_string(),
+            side: "BUY".to_string(),
+            whale_shares: 500.0,
+            whale_price: 0.45,
+            whale_usd: 225.0,
+            our_shares: Some(10.0),
+            our_price: Some(0.46),
+            our_usd: Some(4.6),
+            fill_pct: Some(100.0),
+            status: "SUCCESS".to_string(),
+            latency_ms: Some(85),
+            is_live: Some(true),
+            aggregation_count: Some(3),
+            aggregation_window_ms: Some(750),
+        };
+
+        // Verify aggregation fields are accessible
+        assert_eq!(record.aggregation_count, Some(3));
+        assert_eq!(record.aggregation_window_ms, Some(750));
+    }
+
+    #[test]
+    fn test_trade_record_without_aggregation_fields() {
+        // Test that TradeRecord works with None aggregation fields (non-aggregated trade)
+        let record = TradeRecord {
+            timestamp_ms: 1706000000000,
+            block_number: 12345678,
+            tx_hash: "0xabc123def456".to_string(),
+            trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            token_id: "123456".to_string(),
+            side: "BUY".to_string(),
+            whale_shares: 5000.0,
+            whale_price: 0.45,
+            whale_usd: 2250.0,
+            our_shares: Some(5000.0),
+            our_price: Some(0.46),
+            our_usd: Some(2300.0),
+            fill_pct: Some(100.0),
+            status: "SUCCESS".to_string(),
+            latency_ms: Some(85),
+            is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
+        };
+
+        // Verify non-aggregated trade has None for aggregation fields
+        assert_eq!(record.aggregation_count, None);
+        assert_eq!(record.aggregation_window_ms, None);
+    }
+
+    #[test]
+    fn test_insert_trade_with_aggregation_fields() {
+        let db_path = temp_db_path();
+        cleanup_db(&db_path);
+
+        let store = TradeStore::new(&db_path).expect("Failed to create store");
+
+        // Create a trade record with aggregation info
+        let record = TradeRecord {
+            timestamp_ms: 1706000000000,
+            block_number: 12345678,
+            tx_hash: "0xabc123agg".to_string(),
+            trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            token_id: "123456".to_string(),
+            side: "BUY".to_string(),
+            whale_shares: 500.0,
+            whale_price: 0.45,
+            whale_usd: 225.0,
+            our_shares: Some(10.0),
+            our_price: Some(0.46),
+            our_usd: Some(4.6),
+            fill_pct: Some(100.0),
+            status: "SUCCESS".to_string(),
+            latency_ms: Some(85),
+            is_live: Some(true),
+            aggregation_count: Some(3),
+            aggregation_window_ms: Some(750),
+        };
+
+        // Insert the trade
+        store.insert_trade(&record).expect("Failed to insert trade");
+
+        // Verify the trade was inserted with aggregation fields
+        let count = store.get_trade_count().expect("Failed to get trade count");
+        assert_eq!(count, 1, "Should have 1 trade in database");
+
+        // Retrieve the trade and verify aggregation fields
+        let trades = store.get_recent_trades(1).expect("Failed to get recent trades");
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].aggregation_count, Some(3));
+        assert_eq!(trades[0].aggregation_window_ms, Some(750));
+
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_retrieve_trade_without_aggregation_fields() {
+        let db_path = temp_db_path();
+        cleanup_db(&db_path);
+
+        let store = TradeStore::new(&db_path).expect("Failed to create store");
+
+        // Create a non-aggregated trade (large trade that bypassed aggregation)
+        let record = TradeRecord {
+            timestamp_ms: 1706000000000,
+            block_number: 12345678,
+            tx_hash: "0xabc123noagg".to_string(),
+            trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            token_id: "123456".to_string(),
+            side: "BUY".to_string(),
+            whale_shares: 5000.0,
+            whale_price: 0.45,
+            whale_usd: 2250.0,
+            our_shares: Some(5000.0),
+            our_price: Some(0.46),
+            our_usd: Some(2300.0),
+            fill_pct: Some(100.0),
+            status: "SUCCESS".to_string(),
+            latency_ms: Some(85),
+            is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
+        };
+
+        // Insert the trade
+        store.insert_trade(&record).expect("Failed to insert trade");
+
+        // Retrieve and verify aggregation fields are None
+        let trades = store.get_recent_trades(1).expect("Failed to get recent trades");
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].aggregation_count, None);
+        assert_eq!(trades[0].aggregation_window_ms, None);
+
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_get_aggregation_stats_all_non_aggregated() {
+        let db_path = temp_db_path();
+        cleanup_db(&db_path);
+
+        let store = TradeStore::new(&db_path).expect("Failed to create store");
+
+        // Insert 5 non-aggregated trades (large trades that bypassed aggregation)
+        for i in 0..5 {
+            let record = TradeRecord {
+                timestamp_ms: 1706000000000 + i,
+                block_number: 12345678,
+                tx_hash: format!("0xtx{}", i),
+                trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+                token_id: "123456".to_string(),
+                side: "BUY".to_string(),
+                whale_shares: 5000.0,
+                whale_price: 0.45,
+                whale_usd: 2250.0,
+                our_shares: Some(5000.0),
+                our_price: Some(0.46),
+                our_usd: Some(2300.0),
+                fill_pct: Some(100.0),
+                status: "SUCCESS".to_string(),
+                latency_ms: Some(85),
+                is_live: Some(true),
+                aggregation_count: None, // Not aggregated
+                aggregation_window_ms: None,
+            };
+            store.insert_trade(&record).expect("Failed to insert trade");
+        }
+
+        let stats = store.get_aggregation_stats().expect("Failed to get stats");
+
+        assert_eq!(stats.total_orders, 5);
+        assert_eq!(stats.aggregated_orders, 0);
+        assert_eq!(stats.total_trades_combined, 0);
+        assert_eq!(stats.avg_trades_per_aggregation, 0.0);
+
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_get_aggregation_stats_with_aggregations() {
+        let db_path = temp_db_path();
+        cleanup_db(&db_path);
+
+        let store = TradeStore::new(&db_path).expect("Failed to create store");
+
+        // Insert 3 aggregated trades
+        let aggregated_trades = vec![
+            (Some(3), Some(750)), // 3 trades aggregated in 750ms
+            (Some(2), Some(500)), // 2 trades aggregated in 500ms
+            (Some(4), Some(800)), // 4 trades aggregated in 800ms
+        ];
+
+        for (i, (count, window)) in aggregated_trades.iter().enumerate() {
+            let record = TradeRecord {
+                timestamp_ms: 1706000000000 + i as i64,
+                block_number: 12345678,
+                tx_hash: format!("0xagg{}", i),
+                trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+                token_id: "123456".to_string(),
+                side: "BUY".to_string(),
+                whale_shares: 500.0,
+                whale_price: 0.45,
+                whale_usd: 225.0,
+                our_shares: Some(500.0),
+                our_price: Some(0.46),
+                our_usd: Some(230.0),
+                fill_pct: Some(100.0),
+                status: "SUCCESS".to_string(),
+                latency_ms: Some(85),
+                is_live: Some(true),
+                aggregation_count: *count,
+                aggregation_window_ms: *window,
+            };
+            store.insert_trade(&record).expect("Failed to insert trade");
+        }
+
+        // Insert 2 non-aggregated trades
+        for i in 0..2 {
+            let record = TradeRecord {
+                timestamp_ms: 1706000010000 + i,
+                block_number: 12345678,
+                tx_hash: format!("0xnoagg{}", i),
+                trader_address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+                token_id: "123456".to_string(),
+                side: "BUY".to_string(),
+                whale_shares: 5000.0,
+                whale_price: 0.45,
+                whale_usd: 2250.0,
+                our_shares: Some(5000.0),
+                our_price: Some(0.46),
+                our_usd: Some(2300.0),
+                fill_pct: Some(100.0),
+                status: "SUCCESS".to_string(),
+                latency_ms: Some(85),
+                is_live: Some(true),
+                aggregation_count: None,
+                aggregation_window_ms: None,
+            };
+            store.insert_trade(&record).expect("Failed to insert trade");
+        }
+
+        let stats = store.get_aggregation_stats().expect("Failed to get stats");
+
+        // Total: 3 aggregated + 2 non-aggregated = 5 orders
+        assert_eq!(stats.total_orders, 5);
+        // Aggregated: 3 orders had aggregation
+        assert_eq!(stats.aggregated_orders, 3);
+        // Total trades combined: 3 + 2 + 4 = 9
+        assert_eq!(stats.total_trades_combined, 9);
+        // Average: 9 / 3 = 3.0 trades per aggregation
+        assert!((stats.avg_trades_per_aggregation - 3.0).abs() < 0.01);
+
+        cleanup_db(&db_path);
+    }
+
+    #[test]
+    fn test_get_aggregation_stats_empty_database() {
+        let db_path = temp_db_path();
+        cleanup_db(&db_path);
+
+        let store = TradeStore::new(&db_path).expect("Failed to create store");
+        let stats = store.get_aggregation_stats().expect("Failed to get stats");
+
+        assert_eq!(stats.total_orders, 0);
+        assert_eq!(stats.aggregated_orders, 0);
+        assert_eq!(stats.total_trades_combined, 0);
+        assert_eq!(stats.avg_trades_per_aggregation, 0.0);
+
+        cleanup_db(&db_path);
     }
 }

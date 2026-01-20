@@ -341,6 +341,8 @@ mod tests {
                 status: "SUCCESS".to_string(),
                 latency_ms: Some(50),
                 is_live: Some(true),
+                aggregation_count: None,
+                aggregation_window_ms: None,
             },
             TradeRecord {
                 timestamp_ms: 1704067260000, // 2024-01-01 00:01:00
@@ -359,6 +361,8 @@ mod tests {
                 status: "SUCCESS".to_string(),
                 latency_ms: Some(75),
                 is_live: Some(true),
+                aggregation_count: None,
+                aggregation_window_ms: None,
             },
         ];
         print_table(&trades); // Should not panic
@@ -385,6 +389,8 @@ mod tests {
                 status: "FAILED".to_string(),
                 latency_ms: Some(50),
                 is_live: Some(true),
+                aggregation_count: None,
+                aggregation_window_ms: None,
             },
         ];
         print_table(&trades); // Should not panic
@@ -572,6 +578,8 @@ mod tests {
             status: status.to_string(),
             latency_ms: Some(50),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         }
     }
 }

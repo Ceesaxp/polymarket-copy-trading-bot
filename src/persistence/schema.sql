@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS trades (
     -- Operational flags
     is_live BOOLEAN,                         -- Live trading vs dry run
     is_aggregated BOOLEAN DEFAULT FALSE,     -- Part of aggregated trade
-    aggregation_count INTEGER DEFAULT 1      -- Number of trades aggregated
+    aggregation_count INTEGER DEFAULT 1,     -- Number of trades aggregated
+
+    -- Aggregation analytics (Phase 3 Step 3.3)
+    aggregation_window_ms INTEGER            -- Duration of aggregation window in ms
 );
 
 -- Indexes for common query patterns

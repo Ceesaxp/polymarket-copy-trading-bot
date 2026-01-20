@@ -546,6 +546,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(50),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let trade2 = TradeRecord {
@@ -565,6 +567,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(60),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let trade3 = TradeRecord {
@@ -584,6 +588,8 @@ mod tests {
             status: "FAILED".to_string(),
             latency_ms: Some(70),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         store.insert_trade(&trade1).unwrap();
@@ -630,6 +636,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(50),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let trade2 = TradeRecord {
@@ -649,6 +657,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(60),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let trade3 = TradeRecord {
@@ -668,6 +678,8 @@ mod tests {
             status: "FAILED".to_string(),
             latency_ms: Some(70),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         store.insert_trade(&trade1).unwrap();
@@ -723,6 +735,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(50),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let trade2 = TradeRecord {
@@ -742,6 +756,8 @@ mod tests {
             status: "SUCCESS".to_string(),
             latency_ms: Some(60),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         let trade3 = TradeRecord {
@@ -761,6 +777,8 @@ mod tests {
             status: "FAILED".to_string(),
             latency_ms: Some(70),
             is_live: Some(true),
+            aggregation_count: None,
+            aggregation_window_ms: None,
         };
 
         store.insert_trade(&trade1).unwrap();

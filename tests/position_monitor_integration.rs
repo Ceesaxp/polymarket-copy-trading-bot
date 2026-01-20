@@ -44,6 +44,8 @@ fn make_test_trade(token_id: &str, side: &str, our_shares: f64, our_price: f64) 
         status: "SUCCESS".to_string(),
         latency_ms: Some(85),
         is_live: Some(false),
+        aggregation_count: None,
+        aggregation_window_ms: None,
     }
 }
 

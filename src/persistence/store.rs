@@ -19,12 +19,26 @@ pub struct Position {
     pub trade_count: i32,
 }
 
+/// Aggregation efficiency statistics
+#[derive(Debug, Clone)]
+pub struct AggregationStats {
+    /// Total number of orders executed
+    pub total_orders: u32,
+    /// Number of orders that were aggregated (aggregation_count > 1)
+    pub aggregated_orders: u32,
+    /// Total number of individual trades combined through aggregation
+    pub total_trades_combined: u32,
+    /// Average number of trades per aggregated order
+    pub avg_trades_per_aggregation: f64,
+}
+
 /// TradeRecord represents a single trade execution record
 ///
 /// This struct matches the trades table schema and includes:
 /// - Whale's trade details (what we detected)
 /// - Our execution details (what we achieved)
 /// - Status and timing information
+/// - Aggregation analytics (if trade was aggregated)
 ///
 /// Fields with Option<T> are nullable in the database (e.g., our_* fields for failed trades)
 #[derive(Debug, Clone)]
@@ -61,6 +75,10 @@ pub struct TradeRecord {
     pub latency_ms: Option<i64>,
     /// Live trading vs dry run
     pub is_live: Option<bool>,
+    /// Number of trades combined in aggregation (None or 1 = not aggregated)
+    pub aggregation_count: Option<u32>,
+    /// Duration of aggregation window in milliseconds (None = not aggregated)
+    pub aggregation_window_ms: Option<u64>,
 }
 
 /// TradeStore manages SQLite database connection for trade persistence
@@ -205,8 +223,8 @@ impl TradeStore {
                 timestamp_ms, block_number, tx_hash, trader_address, token_id,
                 side, whale_shares, whale_price, whale_usd,
                 our_shares, our_price, our_usd, fill_pct,
-                status, latency_ms, is_live
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                status, latency_ms, is_live, aggregation_count, aggregation_window_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 record.timestamp_ms,
                 record.block_number as i64,
@@ -224,6 +242,8 @@ impl TradeStore {
                 &record.status,
                 record.latency_ms,
                 record.is_live,
+                record.aggregation_count.map(|c| c as i64),
+                record.aggregation_window_ms.map(|w| w as i64),
             ],
         ).context("Failed to insert trade record")?;
         Ok(())
@@ -287,7 +307,7 @@ impl TradeStore {
             "SELECT timestamp_ms, block_number, tx_hash, trader_address, token_id,
                     side, whale_shares, whale_price, whale_usd,
                     our_shares, our_price, our_usd, fill_pct,
-                    status, latency_ms, is_live
+                    status, latency_ms, is_live, aggregation_count, aggregation_window_ms
              FROM trades
              ORDER BY timestamp_ms DESC
              LIMIT ?1"
@@ -311,6 +331,8 @@ impl TradeStore {
                 status: row.get(13)?,
                 latency_ms: row.get(14)?,
                 is_live: row.get(15)?,
+                aggregation_count: row.get::<_, Option<i64>>(16)?.map(|c| c as u32),
+                aggregation_window_ms: row.get::<_, Option<i64>>(17)?.map(|w| w as u64),
             })
         })
         .context("Failed to execute get_recent_trades query")?
@@ -498,5 +520,52 @@ impl TradeStore {
         ).context("Failed to calculate average fill percentage since timestamp")?;
 
         Ok((total_trades as u32, avg_fill.unwrap_or(0.0)))
+    }
+
+    /// Get aggregation efficiency statistics
+    ///
+    /// Calculates statistics about trade aggregation:
+    /// - Total number of orders executed
+    /// - Number of orders that were aggregated
+    /// - Total trades combined through aggregation
+    /// - Average trades per aggregated order
+    ///
+    /// # Returns
+    /// * `Result<AggregationStats>` - Aggregation efficiency statistics
+    pub fn get_aggregation_stats(&self) -> Result<AggregationStats> {
+        // Get total order count
+        let total_orders: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM trades",
+            [],
+            |row| row.get(0),
+        ).context("Failed to count total orders")?;
+
+        // Get count of aggregated orders (where aggregation_count > 1)
+        let aggregated_orders: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM trades WHERE aggregation_count IS NOT NULL AND aggregation_count > 1",
+            [],
+            |row| row.get(0),
+        ).context("Failed to count aggregated orders")?;
+
+        // Get sum of all aggregation_count values (total trades combined)
+        let total_trades_combined: Option<i64> = self.conn.query_row(
+            "SELECT SUM(aggregation_count) FROM trades WHERE aggregation_count IS NOT NULL AND aggregation_count > 1",
+            [],
+            |row| row.get(0),
+        ).context("Failed to sum aggregation counts")?;
+
+        // Calculate average
+        let avg_trades_per_aggregation = if aggregated_orders > 0 {
+            total_trades_combined.unwrap_or(0) as f64 / aggregated_orders as f64
+        } else {
+            0.0
+        };
+
+        Ok(AggregationStats {
+            total_orders: total_orders as u32,
+            aggregated_orders: aggregated_orders as u32,
+            total_trades_combined: total_trades_combined.unwrap_or(0) as u32,
+            avg_trades_per_aggregation,
+        })
     }
 }
