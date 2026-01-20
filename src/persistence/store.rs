@@ -568,4 +568,20 @@ impl TradeStore {
             avg_trades_per_aggregation,
         })
     }
+
+    /// Check if a tx_hash exists in the database
+    ///
+    /// # Arguments
+    /// * `tx_hash` - Transaction hash to check
+    ///
+    /// # Returns
+    /// * `Result<bool>` - true if tx_hash exists, false otherwise
+    pub fn tx_hash_exists(&self, tx_hash: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM trades WHERE tx_hash = ?1",
+            params![tx_hash],
+            |row| row.get(0),
+        ).context("Failed to check tx_hash existence")?;
+        Ok(count > 0)
+    }
 }
