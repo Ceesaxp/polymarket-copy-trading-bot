@@ -442,4 +442,61 @@ impl TradeStore {
 
         Ok(stats)
     }
+
+    /// Get trade metrics for a specific trader
+    /// Returns: (total_observed_trades, avg_fill_pct)
+    ///
+    /// # Arguments
+    /// * `trader_address` - Trader address to query
+    ///
+    /// # Returns
+    /// * `Result<(u32, f64)>` - (observed count, average fill percentage)
+    pub fn get_trader_trade_metrics(&self, trader_address: &str) -> Result<(u32, f64)> {
+        // Count all trades for this trader (observed trades)
+        let total_trades: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM trades WHERE trader_address = ?1",
+            params![trader_address],
+            |row| row.get(0),
+        ).context("Failed to count trader trades")?;
+
+        // Calculate average fill percentage for successful trades
+        let avg_fill: Option<f64> = self.conn.query_row(
+            "SELECT AVG(fill_pct) FROM trades
+             WHERE trader_address = ?1 AND fill_pct IS NOT NULL",
+            params![trader_address],
+            |row| row.get(0),
+        ).context("Failed to calculate average fill percentage")?;
+
+        Ok((total_trades as u32, avg_fill.unwrap_or(0.0)))
+    }
+
+    /// Get trade metrics for a specific trader since a timestamp
+    /// Returns: (total_observed_trades, avg_fill_pct)
+    ///
+    /// # Arguments
+    /// * `trader_address` - Trader address to query
+    /// * `since_ts` - Unix timestamp in seconds
+    ///
+    /// # Returns
+    /// * `Result<(u32, f64)>` - (observed count since timestamp, average fill percentage)
+    pub fn get_trader_trade_metrics_since(&self, trader_address: &str, since_ts: i64) -> Result<(u32, f64)> {
+        let since_ms = since_ts * 1000; // Convert to milliseconds
+
+        // Count trades for this trader since timestamp
+        let total_trades: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM trades WHERE trader_address = ?1 AND timestamp_ms >= ?2",
+            params![trader_address, since_ms],
+            |row| row.get(0),
+        ).context("Failed to count trader trades since timestamp")?;
+
+        // Calculate average fill percentage for successful trades since timestamp
+        let avg_fill: Option<f64> = self.conn.query_row(
+            "SELECT AVG(fill_pct) FROM trades
+             WHERE trader_address = ?1 AND timestamp_ms >= ?2 AND fill_pct IS NOT NULL",
+            params![trader_address, since_ms],
+            |row| row.get(0),
+        ).context("Failed to calculate average fill percentage since timestamp")?;
+
+        Ok((total_trades as u32, avg_fill.unwrap_or(0.0)))
+    }
 }

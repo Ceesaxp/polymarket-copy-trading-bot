@@ -91,5 +91,9 @@ path = "src/bin/position_monitor.rs"
 name = "trade_history"
 path = "src/bin/trade_history.rs"
 
+[[bin]]
+name = "trader_comparison"
+path = "src/bin/trader_comparison.rs"
+
 [features]
 profiling = []
