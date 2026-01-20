@@ -1,0 +1,16 @@
+[
+  {
+    "address": "204f72f35326db932158cba6adff0b9a1da95e14",
+    "label": "Whale1",
+    "scaling_ratio": 0.02,
+    "min_shares": 100.0,
+    "enabled": true
+  },
+  {
+    "address": "def456abc123789012345678901234567890abcd",
+    "label": "Whale2",
+    "scaling_ratio": 0.01,
+    "min_shares": 50.0,
+    "enabled": true
+  }
+]
