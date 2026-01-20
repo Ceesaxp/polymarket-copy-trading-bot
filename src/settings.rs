@@ -208,6 +208,11 @@ pub struct Config {
 
     // Trader configuration (multi-trader monitoring)
     pub traders: TradersConfig,
+
+    // Trade aggregation settings
+    pub agg_enabled: bool,
+    pub agg_window_ms: u64,
+    pub agg_bypass_shares: f64,
 }
 
 impl Config {
@@ -380,6 +385,9 @@ impl Config {
             db_enabled: env_parse("DB_ENABLED", true),
             db_path: env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string()),
             traders,
+            agg_enabled: env_parse_bool("AGG_ENABLED", false),
+            agg_window_ms: env_parse("AGG_WINDOW_MS", 800),
+            agg_bypass_shares: env_parse("AGG_BYPASS_SHARES", 4000.0),
         })
     }
     
@@ -400,6 +408,13 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
     env::var(key)
         .ok()
         .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Parse boolean env var with support for "true", "1", "false", "0"
+fn env_parse_bool(key: &str, default: bool) -> bool {
+    env::var(key)
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(default)
 }
 
@@ -753,6 +768,9 @@ mod tests {
             db_enabled: false,
             db_path: "/test/path.db".to_string(),
             traders: TradersConfig::new(vec![]),
+            agg_enabled: false,
+            agg_window_ms: 800,
+            agg_bypass_shares: 4000.0,
         };
 
         unsafe {
@@ -781,6 +799,103 @@ mod tests {
             db_enabled: false,
             db_path: "/test/path.db".to_string(),
             traders,
+            agg_enabled: false,
+            agg_window_ms: 800,
+            agg_bypass_shares: 4000.0,
         };
+    }
+
+    // -------------------------------------------------------------------------
+    // Aggregation Configuration Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_aggregation_config_defaults() {
+        // AGG_ENABLED defaults to false
+        unsafe { std::env::remove_var("AGG_ENABLED"); }
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(!enabled, "AGG_ENABLED should default to false");
+
+        // AGG_WINDOW_MS defaults to 800
+        unsafe { std::env::remove_var("AGG_WINDOW_MS"); }
+        let window_ms: u64 = env_parse("AGG_WINDOW_MS", 800);
+        assert_eq!(window_ms, 800, "AGG_WINDOW_MS should default to 800");
+
+        // AGG_BYPASS_SHARES defaults to 4000.0
+        unsafe { std::env::remove_var("AGG_BYPASS_SHARES"); }
+        let bypass: f64 = env_parse("AGG_BYPASS_SHARES", 4000.0);
+        assert_eq!(bypass, 4000.0, "AGG_BYPASS_SHARES should default to 4000.0");
+    }
+
+    #[test]
+    fn test_aggregation_config_enabled_true() {
+        unsafe { std::env::set_var("AGG_ENABLED", "true"); }
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(enabled, "AGG_ENABLED=true should enable aggregation");
+        unsafe { std::env::remove_var("AGG_ENABLED"); }
+    }
+
+    #[test]
+    fn test_aggregation_config_enabled_1() {
+        unsafe { std::env::set_var("AGG_ENABLED", "1"); }
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(enabled, "AGG_ENABLED=1 should enable aggregation");
+        unsafe { std::env::remove_var("AGG_ENABLED"); }
+    }
+
+    #[test]
+    fn test_aggregation_config_custom_window() {
+        unsafe { std::env::set_var("AGG_WINDOW_MS", "1000"); }
+        let window_ms: u64 = env_parse("AGG_WINDOW_MS", 800);
+        assert_eq!(window_ms, 1000, "AGG_WINDOW_MS=1000 should set window to 1000ms");
+        unsafe { std::env::remove_var("AGG_WINDOW_MS"); }
+    }
+
+    #[test]
+    fn test_aggregation_config_custom_bypass() {
+        unsafe { std::env::set_var("AGG_BYPASS_SHARES", "5000.0"); }
+        let bypass: f64 = env_parse("AGG_BYPASS_SHARES", 4000.0);
+        assert_eq!(bypass, 5000.0, "AGG_BYPASS_SHARES=5000.0 should set bypass to 5000.0");
+        unsafe { std::env::remove_var("AGG_BYPASS_SHARES"); }
+    }
+
+    #[test]
+    fn test_config_has_aggregation_fields() {
+        use crate::config::traders::TradersConfig;
+
+        // This test will fail until we add aggregation fields to Config struct
+        let traders = TradersConfig::new(vec![]);
+        let _test_config = Config {
+            private_key: "test".to_string(),
+            funder_address: None,
+            wss_url: "test".to_string(),
+            enable_trading: true,
+            mock_trading: false,
+            cb_large_trade_shares: 1500.0,
+            cb_consecutive_trigger: 2,
+            cb_sequence_window_secs: 30,
+            cb_min_depth_usd: 200.0,
+            cb_trip_duration_secs: 120,
+            db_enabled: false,
+            db_path: "/test/path.db".to_string(),
+            traders,
+            agg_enabled: false,
+            agg_window_ms: 800,
+            agg_bypass_shares: 4000.0,
+        };
+    }
+
+    #[test]
+    fn test_aggregation_disabled_by_default() {
+        // Clear env vars to test defaults
+        unsafe {
+            std::env::remove_var("AGG_ENABLED");
+            std::env::remove_var("AGG_WINDOW_MS");
+            std::env::remove_var("AGG_BYPASS_SHARES");
+        }
+
+        // Verify default behavior: aggregation disabled
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(!enabled, "Aggregation should be disabled by default");
     }
 }

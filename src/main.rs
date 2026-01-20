@@ -29,6 +29,7 @@ use pm_whale_follower::soccer_markets;
 use pm_whale_follower::persistence::{TradeStore, TradeRecord};
 use pm_whale_follower::config::traders::TradersConfig;
 use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
+use pm_whale_follower::aggregator::{TradeAggregator, AggregationConfig};
 use models::*;
 use std::sync::Arc;
 
@@ -96,6 +97,25 @@ async fn main() -> Result<()> {
     let trader_manager = Arc::new(Mutex::new(TraderManager::new(&cfg.traders)));
     println!("Trader state manager initialized for {} traders", cfg.traders.len());
 
+    // Initialize trade aggregator (if enabled)
+    let aggregator = if cfg.agg_enabled {
+        let agg_config = AggregationConfig {
+            window_duration: Duration::from_millis(cfg.agg_window_ms),
+            min_trades: 2,
+            max_pending_usd: 500.0,
+            bypass_threshold: cfg.agg_bypass_shares,
+        };
+        let agg = Arc::new(Mutex::new(TradeAggregator::new(agg_config)));
+        println!(
+            "Trade aggregation enabled: {}ms window, bypass threshold: {} shares",
+            cfg.agg_window_ms, cfg.agg_bypass_shares
+        );
+        Some(agg)
+    } else {
+        println!("Trade aggregation disabled");
+        None
+    };
+
     // Initialize trade persistence channel (if enabled)
     // Uses a dedicated background thread to handle SQLite operations
     let (trade_tx, stats_persist_path) = if cfg.db_enabled {
@@ -145,17 +165,73 @@ async fn main() -> Result<()> {
         cfg.enable_trading, cfg.mock_trading
     );
 
+    // Spawn background flush task for aggregator (if enabled)
+    if let Some(ref agg) = aggregator {
+        let agg_clone = Arc::clone(agg);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+
+                // Flush expired aggregation windows
+                let expired = {
+                    let mut agg_lock = agg_clone.lock().await;
+                    agg_lock.flush_expired()
+                };
+
+                // Execute each aggregated trade
+                for aggregated in expired {
+                    let count = aggregated.trade_count;
+                    println!(
+                        "[AGG] Window flush: {} trades combined into 1 order ({:.2} shares @ {:.4} avg)",
+                        count, aggregated.total_shares, aggregated.avg_price
+                    );
+
+                    // TODO: Execute aggregated trade through order engine
+                    // This will be implemented in Phase 3, Step 3.3
+                    // For now, just log that we would execute it
+                }
+            }
+        });
+    }
+
     // Spawn signal handler for graceful shutdown
     // Note: When the channel is dropped, the persistence worker will flush and exit
+    let aggregator_shutdown = aggregator.clone();
     tokio::spawn(async move {
         if let Ok(()) = tokio::signal::ctrl_c().await {
             println!("\nReceived shutdown signal, shutting down...");
+
+            // Flush any pending aggregations before shutdown
+            if let Some(agg) = aggregator_shutdown {
+                let pending_aggregations = {
+                    let mut agg_lock = agg.lock().await;
+                    agg_lock.flush_all()
+                };
+
+                if !pending_aggregations.is_empty() {
+                    println!(
+                        "[AGG] Shutdown: flushing {} pending aggregations",
+                        pending_aggregations.len()
+                    );
+
+                    // TODO: Execute pending aggregations before exit (Phase 3, Step 3.3)
+                    // For now, just log what would be executed
+                    for aggregated in pending_aggregations {
+                        println!(
+                            "[AGG] Shutdown flush: {} trades -> {:.2} shares @ {:.4} avg",
+                            aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
+                        );
+                    }
+                }
+            }
+
             std::process::exit(0);
         }
     });
 
     loop {
-        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone(), Arc::clone(&trader_manager), stats_persist_path.clone()).await {
+        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone(), Arc::clone(&trader_manager), stats_persist_path.clone(), aggregator.clone()).await {
             eprintln!("⚠️ WS error: {e}. Reconnecting...");
             tokio::time::sleep(WS_RECONNECT_DELAY).await;
         }
@@ -563,6 +639,7 @@ async fn run_ws_loop(
     trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
     trader_manager: Arc<Mutex<TraderManager>>,
     stats_persist_path: Option<String>,
+    aggregator: Option<Arc<Mutex<TradeAggregator>>>,
 ) -> Result<()> {
     let (mut ws, _) = connect_async(&cfg.wss_url).await?;
 
@@ -607,7 +684,8 @@ async fn run_ws_loop(
                     let client = http_client.clone();
                     let tx = trade_tx.clone();
                     let tm = Arc::clone(&trader_manager);
-                    tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm).await });
+                    let agg = aggregator.clone();
+                    tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm, agg).await });
                 }
             }
             Message::Binary(bin) => {
@@ -617,7 +695,8 @@ async fn run_ws_loop(
                         let client = http_client.clone();
                         let tx = trade_tx.clone();
                         let tm = Arc::clone(&trader_manager);
-                        tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm).await });
+                        let agg = aggregator.clone();
+                        tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm, agg).await });
                     }
                 }
             }
@@ -675,6 +754,7 @@ async fn handle_event(
     http_client: &reqwest::Client,
     trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
     trader_manager: Arc<Mutex<TraderManager>>,
+    aggregator: Option<Arc<Mutex<TradeAggregator>>>,
 ) {
     // Check live status from cache, fallback to API lookup
     let is_live = match market_cache::get_is_live(&evt.order.clob_token_id) {
@@ -682,7 +762,46 @@ async fn handle_event(
         None => fetch_is_live(&evt.order.clob_token_id, http_client).await,
     };
 
-    let status = order_engine.submit(evt.clone(), is_live).await;
+    // Aggregation logic (if enabled)
+    let status = if let Some(agg) = aggregator {
+        let side = if evt.order.order_type.starts_with("BUY") { "BUY" } else { "SELL" };
+        let shares = evt.order.shares;
+        let price = evt.order.price_per_share;
+        let token_id = evt.order.clob_token_id.to_string();
+        let trader = evt.trader_address.clone();
+
+        // Add trade to aggregator and check if we should execute immediately
+        let aggregation_result = {
+            let mut agg_lock = agg.lock().await;
+            agg_lock.add_trade(token_id.clone(), side.to_string(), shares, price, trader)
+        };
+
+        match aggregation_result {
+            Some(aggregated) => {
+                // Execute aggregated trade immediately (bypass or threshold reached)
+                if aggregated.trade_count == 1 {
+                    // Bypass: large trade executed immediately
+                    println!("[AGG] Bypass: {:.2} shares executed immediately", aggregated.total_shares);
+                } else {
+                    // Aggregated: multiple trades combined
+                    println!(
+                        "[AGG] Aggregated: {} trades -> {:.2} shares @ {:.4} avg",
+                        aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
+                    );
+                }
+                // TODO: Execute the aggregated trade (Phase 3, Step 3.3)
+                order_engine.submit(evt.clone(), is_live).await
+            }
+            None => {
+                // Trade added to pending window
+                println!("[AGG] Pending: trade added to aggregation window");
+                "AGG_PENDING".to_string()
+            }
+        }
+    } else {
+        // Aggregation disabled - execute immediately
+        order_engine.submit(evt.clone(), is_live).await
+    };
 
     tokio::time::sleep(Duration::from_secs_f32(2.8)).await;
 
