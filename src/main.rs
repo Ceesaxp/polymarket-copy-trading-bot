@@ -27,6 +27,7 @@ use pm_whale_follower::market_cache;
 use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
 use pm_whale_follower::persistence::{TradeStore, TradeRecord};
+use pm_whale_follower::config::traders::TradersConfig;
 use models::*;
 use std::sync::Arc;
 
@@ -149,7 +150,7 @@ async fn main() -> Result<()> {
     });
 
     loop {
-        if let Err(e) = run_ws_loop(&cfg.wss_url, &order_engine, trade_tx.clone()).await {
+        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone()).await {
             eprintln!("⚠️ WS error: {e}. Reconnecting...");
             tokio::time::sleep(WS_RECONNECT_DELAY).await;
         }
@@ -528,18 +529,44 @@ fn fetch_book_depth_blocking(
 // WebSocket Loop
 // ============================================================================
 
-async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine, trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>) -> Result<()> {
-    let (mut ws, _) = connect_async(wss_url).await?;
+/// Build WebSocket subscription message for monitoring trader events
+/// Returns JSON-RPC subscription message as string
+fn build_subscription_message(topic_filter: Vec<String>) -> String {
+    let topics_array: Value = if topic_filter.is_empty() {
+        // No filter - should not happen in practice
+        serde_json::json!([[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, Value::Null])
+    } else if topic_filter.len() > 10 {
+        // Too many traders - use null filter and do client-side filtering
+        serde_json::json!([[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, Value::Null])
+    } else {
+        // Normal case: filter by specific trader topics
+        serde_json::json!([[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, topic_filter])
+    };
 
-    let sub = serde_json::json!({
+    serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "eth_subscribe",
         "params": ["logs", {
             "address": MONITORED_ADDRESSES,
-            "topics": [[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, TARGET_TOPIC_HEX.as_str()]
+            "topics": topics_array
         }]
-    }).to_string();
+    }).to_string()
+}
 
-    println!("🔌 Connected. Subscribing...");
+async fn run_ws_loop(cfg: &Config, order_engine: &OrderEngine, trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>) -> Result<()> {
+    let (mut ws, _) = connect_async(&cfg.wss_url).await?;
+
+    // Build topic filter from traders config
+    let topic_filter = cfg.traders.build_topic_filter();
+    let sub = build_subscription_message(topic_filter.clone());
+
+    // Log trader monitoring info
+    let trader_count = cfg.traders.iter().filter(|t| t.enabled).count();
+    if topic_filter.len() > 10 {
+        println!("🔌 Connected. Subscribing to {} traders (client-side filtering)...", trader_count);
+    } else {
+        println!("🔌 Connected. Subscribing to {} trader(s)...", trader_count);
+    }
+
     ws.send(Message::Text(sub)).await?;
 
     let http_client = reqwest::Client::builder().no_proxy().build()?;
@@ -564,7 +591,7 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine, trade_tx: Option
                     }
                 }
 
-                if let Some(evt) = parse_event(text) {
+                if let Some(evt) = parse_event(text, Some(&cfg.traders)) {
                     let engine = order_engine.clone();
                     let client = http_client.clone();
                     let tx = trade_tx.clone();
@@ -573,7 +600,7 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine, trade_tx: Option
             }
             Message::Binary(bin) => {
                 if let Ok(text) = String::from_utf8(bin) {
-                    if let Some(evt) = parse_event(text) {
+                    if let Some(evt) = parse_event(text, Some(&cfg.traders)) {
                         let engine = order_engine.clone();
                         let client = http_client.clone();
                         let tx = trade_tx.clone();
@@ -654,7 +681,7 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
             block_number: evt.block_number,
             tx_hash: evt.tx_hash.clone(),
-            trader_address: String::new(), // Not available in ParsedEvent, could be added later
+            trader_address: evt.trader_address.clone(),
             token_id: evt.order.clob_token_id.to_string(),
             side: if evt.order.order_type.starts_with("BUY") { "BUY".to_string() } else { "SELL".to_string() },
             whale_shares: evt.order.shares,
@@ -1199,17 +1226,37 @@ async fn fetch_best_book(token_id: &str, order_type: &str, client: &reqwest::Cli
 // Event Parsing
 // ============================================================================
 
-fn parse_event(message: String) -> Option<ParsedEvent> {
+fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<ParsedEvent> {
     let msg: WsMessage = serde_json::from_str(&message).ok()?;
     let result = msg.params?.result?;
-    
-    // just to double check! 
+
+    // just to double check!
     if result.topics.len() < 3 { return None; }
-    
-    let has_target = result.topics.get(2)
-        .map(|t| t.eq_ignore_ascii_case(TARGET_TOPIC_HEX.as_str()))
-        .unwrap_or(false);
-    if !has_target { return None; }
+
+    // Extract trader address from topics[2]
+    // Format: 0x000000000000000000000000{40-char-address}
+    let trader_topic = result.topics.get(2)?;
+    let trader_address = extract_address_from_topic(trader_topic)?;
+
+    // Look up trader in config (if provided)
+    let trader_label = if let Some(traders_cfg) = traders {
+        // Try to find trader by topic hex
+        if let Some(trader_cfg) = traders_cfg.get_by_topic(trader_topic) {
+            if !trader_cfg.enabled {
+                return None; // Skip disabled traders
+            }
+            trader_cfg.label.clone()
+        } else {
+            // Trader not in our config - skip
+            return None;
+        }
+    } else {
+        // No traders config provided (legacy mode or tests)
+        // Fall back to checking TARGET_TOPIC_HEX
+        let has_target = trader_topic.eq_ignore_ascii_case(TARGET_TOPIC_HEX.as_str());
+        if !has_target { return None; }
+        String::new()
+    };
 
     let hex_data = &result.data;
     if hex_data.len() < 2 + 64 * 4 { return None; }
@@ -1246,6 +1293,8 @@ fn parse_event(message: String) -> Option<ParsedEvent> {
             .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
             .unwrap_or_default(),
         tx_hash: result.transaction_hash.unwrap_or_default(),
+        trader_address,
+        trader_label,
         order: OrderInfo {
             order_type,
             clob_token_id: u256_to_dec_cached(&token_bytes, &clob_id),
@@ -1254,6 +1303,19 @@ fn parse_event(message: String) -> Option<ParsedEvent> {
             price_per_share: price,
         },
     })
+}
+
+/// Extract 40-character address from a topic hex string
+/// Format: 0x000000000000000000000000{40-char-address}
+/// Returns normalized lowercase address without 0x prefix
+fn extract_address_from_topic(topic: &str) -> Option<String> {
+    let topic_clean = topic.trim().strip_prefix("0x").unwrap_or(topic.trim());
+    if topic_clean.len() != 64 {
+        return None;
+    }
+    // Last 40 characters are the address (first 24 are padding zeros)
+    let address = &topic_clean[24..64];
+    Some(address.to_lowercase())
 }
 
 // ============================================================================
@@ -1353,5 +1415,198 @@ fn sanitize_csv(value: &str, out: &mut String) {
     out.reserve(value.len());
     for &b in value.as_bytes() {
         out.push(match b { b',' => ';', b'\n' | b'\r' => ' ', _ => b as char });
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test extracting trader address from topics[2]
+    /// Topics[2] format: 0x000000000000000000000000{40-char-address}
+    #[test]
+    fn test_extract_trader_address_from_topic() {
+        // Ensure env var is set (for legacy TARGET_TOPIC_HEX fallback)
+        unsafe {
+            std::env::set_var("TARGET_WHALE_ADDRESS", "def456def456789012345678901234567890def4");
+        }
+
+        // Use a consistent test address
+        let trader_addr = "def456def456789012345678901234567890def4";
+        let topic_hex = format!("0x000000000000000000000000{}", trader_addr);
+
+        let message = serde_json::json!({
+            "params": {
+                "result": {
+                    "topics": [
+                        ORDERS_FILLED_EVENT_SIGNATURE,
+                        "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        topic_hex
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456000000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000000007a120",
+                    "blockNumber": "0x1234",
+                    "transactionHash": "0xabcdef"
+                }
+            }
+        }).to_string();
+
+        let event = parse_event(message, None);
+        assert!(event.is_some());
+        let event = event.unwrap();
+
+        // Trader address should be extracted and normalized (lowercase, no 0x)
+        assert_eq!(event.trader_address, trader_addr);
+    }
+
+    /// Test that trader address is normalized to lowercase
+    #[test]
+    fn test_trader_address_normalized_to_lowercase() {
+        // Ensure env var is set (for legacy TARGET_TOPIC_HEX fallback)
+        unsafe {
+            std::env::set_var("TARGET_WHALE_ADDRESS", "def456def456789012345678901234567890def4");
+        }
+
+        // Use same test address but uppercase
+        let trader_addr_upper = "DEF456DEF456789012345678901234567890DEF4";
+        let topic_hex = format!("0x000000000000000000000000{}", trader_addr_upper);
+
+        let message = serde_json::json!({
+            "params": {
+                "result": {
+                    "topics": [
+                        ORDERS_FILLED_EVENT_SIGNATURE,
+                        "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        topic_hex
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456000000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000000007a120",
+                    "blockNumber": "0x1234",
+                    "transactionHash": "0xabcdef"
+                }
+            }
+        }).to_string();
+
+        let event = parse_event(message, None);
+        assert!(event.is_some());
+        let event = event.unwrap();
+
+        // Should be normalized to lowercase
+        assert_eq!(event.trader_address, trader_addr_upper.to_lowercase());
+    }
+
+    /// Test that trader_label is empty (will be populated in later increment)
+    #[test]
+    fn test_trader_label_initially_empty() {
+        // Ensure env var is set (for legacy TARGET_TOPIC_HEX fallback)
+        unsafe {
+            std::env::set_var("TARGET_WHALE_ADDRESS", "def456def456789012345678901234567890def4");
+        }
+
+        let trader_addr = "def456def456789012345678901234567890def4";
+        let topic_hex = format!("0x000000000000000000000000{}", trader_addr);
+
+        let message = serde_json::json!({
+            "params": {
+                "result": {
+                    "topics": [
+                        ORDERS_FILLED_EVENT_SIGNATURE,
+                        "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        topic_hex
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456000000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000000007a120",
+                    "blockNumber": "0x1234",
+                    "transactionHash": "0xabcdef"
+                }
+            }
+        }).to_string();
+
+        let event = parse_event(message, None);
+        assert!(event.is_some());
+        let event = event.unwrap();
+
+        // Label should be empty for now
+        assert_eq!(event.trader_label, "");
+    }
+
+    // Test extract_address_from_topic helper function
+    #[test]
+    fn test_extract_address_from_topic_valid() {
+        let topic = "0x000000000000000000000000abc123def456789012345678901234567890abcd";
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, Some("abc123def456789012345678901234567890abcd".to_string()));
+    }
+
+    #[test]
+    fn test_extract_address_from_topic_uppercase() {
+        let topic = "0x000000000000000000000000ABC123DEF456789012345678901234567890ABCD";
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, Some("abc123def456789012345678901234567890abcd".to_string()));
+    }
+
+    #[test]
+    fn test_extract_address_from_topic_no_prefix() {
+        let topic = "000000000000000000000000def456def456789012345678901234567890def4";
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, Some("def456def456789012345678901234567890def4".to_string()));
+    }
+
+    #[test]
+    fn test_extract_address_from_topic_invalid_length() {
+        let topic = "0x0000000000000000000000abc123";  // Too short
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, None);
+    }
+
+    // Test subscription message building
+    #[test]
+    fn test_build_subscription_message_single_topic() {
+        let topics = vec![
+            "0x000000000000000000000000abc123def456789012345678901234567890abcd".to_string()
+        ];
+
+        let msg = build_subscription_message(topics);
+        let parsed: Value = serde_json::from_str(&msg).unwrap();
+
+        // Verify structure
+        assert_eq!(parsed["method"], "eth_subscribe");
+        assert_eq!(parsed["params"][0], "logs");
+
+        // Verify topics array has trader filter
+        let topics_array = &parsed["params"][1]["topics"];
+        assert!(topics_array.is_array());
+        assert_eq!(topics_array[2][0], "0x000000000000000000000000abc123def456789012345678901234567890abcd");
+    }
+
+    #[test]
+    fn test_build_subscription_message_multiple_topics() {
+        let topics = vec![
+            "0x000000000000000000000000abc123def456789012345678901234567890abcd".to_string(),
+            "0x000000000000000000000000def456def456789012345678901234567890def4".to_string(),
+        ];
+
+        let msg = build_subscription_message(topics);
+        let parsed: Value = serde_json::from_str(&msg).unwrap();
+
+        // Verify topics array has both traders
+        let topics_array = &parsed["params"][1]["topics"];
+        assert_eq!(topics_array[2].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_build_subscription_message_many_topics_uses_null_filter() {
+        // Create 15 topics (> 10 threshold)
+        let topics: Vec<String> = (0..15)
+            .map(|i| format!("0x{:064x}", i))
+            .collect();
+
+        let msg = build_subscription_message(topics);
+        let parsed: Value = serde_json::from_str(&msg).unwrap();
+
+        // Verify topics[2] is null (client-side filtering)
+        let topics_array = &parsed["params"][1]["topics"];
+        assert_eq!(topics_array[2], Value::Null);
     }
 }

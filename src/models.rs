@@ -21,6 +21,12 @@ pub struct OrderInfo {
 pub struct ParsedEvent {
     pub block_number: u64,
     pub tx_hash: String,
+    /// Normalized 40-character hex address of the trader (lowercase, no 0x prefix)
+    /// Empty string if trader is unknown or not yet populated
+    pub trader_address: String,
+    /// Human-friendly label for the trader (e.g., "Whale1", "TopTrader")
+    /// Empty string if trader is unknown or not yet populated
+    pub trader_label: String,
     pub order: OrderInfo,
 }
 
@@ -89,4 +95,79 @@ pub struct LogResult {
     pub block_number: Option<String>,
     #[serde(rename = "transactionHash")]
     pub transaction_hash: Option<String>,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that ParsedEvent can hold trader address information
+    #[test]
+    fn test_parsed_event_has_trader_address() {
+        let event = ParsedEvent {
+            block_number: 12345,
+            tx_hash: "0xabc123".to_string(),
+            trader_address: "abc123def456789012345678901234567890abcd".to_string(),
+            trader_label: "Whale1".to_string(),
+            order: OrderInfo {
+                order_type: "BUY_FILL".to_string(),
+                clob_token_id: Arc::from("123456"),
+                usd_value: 100.0,
+                shares: 500.0,
+                price_per_share: 0.20,
+            },
+        };
+
+        assert_eq!(event.trader_address, "abc123def456789012345678901234567890abcd");
+        assert_eq!(event.trader_label, "Whale1");
+    }
+
+    /// Test that ParsedEvent trader fields can be empty strings (for unknown traders)
+    #[test]
+    fn test_parsed_event_trader_fields_can_be_empty() {
+        let event = ParsedEvent {
+            block_number: 12345,
+            tx_hash: "0xabc123".to_string(),
+            trader_address: String::new(),
+            trader_label: String::new(),
+            order: OrderInfo {
+                order_type: "BUY_FILL".to_string(),
+                clob_token_id: Arc::from("123456"),
+                usd_value: 100.0,
+                shares: 500.0,
+                price_per_share: 0.20,
+            },
+        };
+
+        assert_eq!(event.trader_address, "");
+        assert_eq!(event.trader_label, "");
+    }
+
+    /// Test that ParsedEvent can be cloned with trader information
+    #[test]
+    fn test_parsed_event_clone_preserves_trader_info() {
+        let event1 = ParsedEvent {
+            block_number: 12345,
+            tx_hash: "0xabc123".to_string(),
+            trader_address: "def456def456789012345678901234567890def4".to_string(),
+            trader_label: "TopTrader".to_string(),
+            order: OrderInfo {
+                order_type: "SELL_FILL".to_string(),
+                clob_token_id: Arc::from("789012"),
+                usd_value: 250.0,
+                shares: 1000.0,
+                price_per_share: 0.25,
+            },
+        };
+
+        let event2 = event1.clone();
+
+        assert_eq!(event2.trader_address, "def456def456789012345678901234567890def4");
+        assert_eq!(event2.trader_label, "TopTrader");
+        assert_eq!(event2.block_number, 12345);
+    }
 }

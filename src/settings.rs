@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::risk_guard;
 use crate::tennis_markets;
 use crate::soccer_markets;
+use crate::config::traders::TradersConfig;
 
 // ============================================================================
 // Blockchain Constants
@@ -204,6 +205,9 @@ pub struct Config {
     // Database persistence settings
     pub db_enabled: bool,
     pub db_path: String,
+
+    // Trader configuration (multi-trader monitoring)
+    pub traders: TradersConfig,
 }
 
 impl Config {
@@ -357,7 +361,11 @@ impl Config {
         let mock_trading = env::var("MOCK_TRADING")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
-        
+
+        // Load trader configuration (from file or env var)
+        let traders = TradersConfig::load()
+            .map_err(|e| anyhow::anyhow!("Failed to load trader configuration: {}", e))?;
+
         Ok(Self {
             private_key,
             funder_address,
@@ -371,6 +379,7 @@ impl Config {
             cb_trip_duration_secs: env_parse("CB_TRIP_DURATION_SECS", 120),
             db_enabled: env_parse("DB_ENABLED", true),
             db_path: env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string()),
+            traders,
         })
     }
     
@@ -717,6 +726,8 @@ mod tests {
 
     #[test]
     fn test_config_has_db_fields() {
+        use crate::config::traders::TradersConfig;
+
         // This test will fail until we add db_enabled and db_path to Config struct
         unsafe {
             std::env::set_var("DB_ENABLED", "false");
@@ -741,11 +752,35 @@ mod tests {
             cb_trip_duration_secs: 120,
             db_enabled: false,
             db_path: "/test/path.db".to_string(),
+            traders: TradersConfig::new(vec![]),
         };
 
         unsafe {
             std::env::remove_var("DB_ENABLED");
             std::env::remove_var("DB_PATH");
         }
+    }
+
+    #[test]
+    fn test_config_has_traders_field() {
+        use crate::config::traders::TradersConfig;
+
+        // Verify Config struct has traders field
+        let traders = TradersConfig::new(vec![]);
+        let _test_config = Config {
+            private_key: "test".to_string(),
+            funder_address: None,
+            wss_url: "test".to_string(),
+            enable_trading: true,
+            mock_trading: false,
+            cb_large_trade_shares: 1500.0,
+            cb_consecutive_trigger: 2,
+            cb_sequence_window_secs: 30,
+            cb_min_depth_usd: 200.0,
+            cb_trip_duration_secs: 120,
+            db_enabled: false,
+            db_path: "/test/path.db".to_string(),
+            traders,
+        };
     }
 }
