@@ -213,6 +213,10 @@ pub struct Config {
     pub agg_enabled: bool,
     pub agg_window_ms: u64,
     pub agg_bypass_shares: f64,
+
+    // HTTP API settings
+    pub api_enabled: bool,
+    pub api_port: u16,
 }
 
 impl Config {
@@ -388,6 +392,8 @@ impl Config {
             agg_enabled: env_parse_bool("AGG_ENABLED", false),
             agg_window_ms: env_parse("AGG_WINDOW_MS", 800),
             agg_bypass_shares: env_parse("AGG_BYPASS_SHARES", 4000.0),
+            api_enabled: env_parse_bool("API_ENABLED", false),
+            api_port: env_parse("API_PORT", 8080),
         })
     }
     
@@ -771,6 +777,8 @@ mod tests {
             agg_enabled: false,
             agg_window_ms: 800,
             agg_bypass_shares: 4000.0,
+            api_enabled: false,
+            api_port: 8080,
         };
 
         unsafe {
@@ -802,6 +810,8 @@ mod tests {
             agg_enabled: false,
             agg_window_ms: 800,
             agg_bypass_shares: 4000.0,
+            api_enabled: false,
+            api_port: 8080,
         };
     }
 
@@ -882,6 +892,8 @@ mod tests {
             agg_enabled: false,
             agg_window_ms: 800,
             agg_bypass_shares: 4000.0,
+            api_enabled: false,
+            api_port: 8080,
         };
     }
 
@@ -897,5 +909,54 @@ mod tests {
         // Verify default behavior: aggregation disabled
         let enabled: bool = env_parse_bool("AGG_ENABLED", false);
         assert!(!enabled, "Aggregation should be disabled by default");
+    }
+
+    // -------------------------------------------------------------------------
+    // API Configuration Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_api_config_defaults() {
+        // Test that default values work correctly
+        // Don't rely on env var state - just test the logic directly
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_DEFAULT_NONEXISTENT", false);
+        assert!(!enabled, "API_ENABLED should default to false when not set");
+
+        let port: u16 = env_parse("API_PORT_TEST_DEFAULT_NONEXISTENT", 8080);
+        assert_eq!(port, 8080, "API_PORT should default to 8080 when not set");
+    }
+
+    #[test]
+    fn test_api_config_enabled_true() {
+        // Test true parsing
+        unsafe { std::env::set_var("API_ENABLED_TEST_TRUE", "true"); }
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_TRUE", false);
+        assert!(enabled, "API_ENABLED=true should enable API");
+        unsafe { std::env::remove_var("API_ENABLED_TEST_TRUE"); }
+    }
+
+    #[test]
+    fn test_api_config_enabled_1() {
+        unsafe { std::env::set_var("API_ENABLED_TEST_ONE", "1"); }
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_ONE", false);
+        assert!(enabled, "API_ENABLED=1 should enable API");
+        unsafe { std::env::remove_var("API_ENABLED_TEST_ONE"); }
+    }
+
+    #[test]
+    fn test_api_config_custom_port() {
+        unsafe {
+            std::env::set_var("API_PORT_TEST_CUSTOM", "9090");
+        }
+        let port: u16 = env_parse("API_PORT_TEST_CUSTOM", 8080);
+        assert_eq!(port, 9090, "API_PORT=9090 should set port to 9090");
+        unsafe { std::env::remove_var("API_PORT_TEST_CUSTOM"); }
+    }
+
+    #[test]
+    fn test_api_disabled_by_default() {
+        // Verify default behavior when env var doesn't exist
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_DISABLED_NONEXISTENT", false);
+        assert!(!enabled, "API should be disabled by default when env var not set");
     }
 }

@@ -30,6 +30,7 @@ use pm_whale_follower::persistence::{TradeStore, TradeRecord};
 use pm_whale_follower::config::traders::TradersConfig;
 use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
 use pm_whale_follower::aggregator::{TradeAggregator, AggregationConfig};
+use pm_whale_follower::api::{ApiConfig, start_api_server};
 use models::*;
 use std::sync::Arc;
 
@@ -133,6 +134,28 @@ async fn main() -> Result<()> {
         println!("Trade persistence disabled");
         (None, None)
     };
+
+    // Start HTTP API server (if enabled)
+    if cfg.api_enabled {
+        let api_config = ApiConfig {
+            enabled: cfg.api_enabled,
+            port: cfg.api_port,
+        };
+        let api_db_path = stats_persist_path.clone();
+
+        match start_api_server(api_config, api_db_path).await {
+            Ok(_handle) => {
+                println!("HTTP API server started on http://127.0.0.1:{}", cfg.api_port);
+                println!("  - GET /health - Health check");
+                println!("  - GET /positions - Current positions");
+                println!("  - GET /trades?limit=N&since=TS - Trade history");
+                println!("  - GET /stats - Aggregation statistics");
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to start API server: {}", e);
+            }
+        }
+    }
 
     let (client, creds) = build_worker_state(
         cfg.private_key.clone(),
