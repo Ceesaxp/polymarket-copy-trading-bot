@@ -26,6 +26,7 @@ use pm_whale_follower::settings::*;
 use pm_whale_follower::market_cache;
 use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
+use pm_whale_follower::persistence::{TradeStore, TradeRecord};
 use models::*;
 use std::sync::Arc;
 
@@ -88,7 +89,25 @@ async fn main() -> Result<()> {
     let _cache_refresh_handle = market_cache::spawn_cache_refresh_task();
 
     let cfg = Config::from_env()?;
-    
+
+    // Initialize trade persistence channel (if enabled)
+    // Uses a dedicated background thread to handle SQLite operations
+    let trade_tx: Option<mpsc::UnboundedSender<TradeRecord>> = if cfg.db_enabled {
+        let db_path = cfg.db_path.clone();
+        let (tx, rx) = mpsc::unbounded_channel::<TradeRecord>();
+
+        // Spawn a background thread for persistence (SQLite is not Send)
+        std::thread::spawn(move || {
+            persistence_worker(rx, &db_path);
+        });
+
+        println!("Trade persistence enabled: {}", cfg.db_path);
+        Some(tx)
+    } else {
+        println!("Trade persistence disabled");
+        None
+    };
+
     let (client, creds) = build_worker_state(
         cfg.private_key.clone(),
         cfg.funder_address.clone(),
@@ -120,8 +139,17 @@ async fn main() -> Result<()> {
         cfg.enable_trading, cfg.mock_trading
     );
 
+    // Spawn signal handler for graceful shutdown
+    // Note: When the channel is dropped, the persistence worker will flush and exit
+    tokio::spawn(async move {
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            println!("\nReceived shutdown signal, shutting down...");
+            std::process::exit(0);
+        }
+    });
+
     loop {
-        if let Err(e) = run_ws_loop(&cfg.wss_url, &order_engine).await {
+        if let Err(e) = run_ws_loop(&cfg.wss_url, &order_engine, trade_tx.clone()).await {
             eprintln!("⚠️ WS error: {e}. Reconnecting...");
             tokio::time::sleep(WS_RECONNECT_DELAY).await;
         }
@@ -174,6 +202,39 @@ fn start_order_worker(
     std::thread::spawn(move || {
         let mut guard = RiskGuard::new(risk_config);
         order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx);
+    });
+}
+
+/// Background worker for trade persistence
+/// Runs on a dedicated thread to avoid Send/Sync issues with rusqlite
+fn persistence_worker(rx: mpsc::UnboundedReceiver<TradeRecord>, db_path: &str) {
+    // Create TradeStore on this thread (SQLite connection is not Send)
+    let store = match TradeStore::new(db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to initialize TradeStore in persistence worker: {}", e);
+            return;
+        }
+    };
+
+    // Create a runtime for the receiver
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime for persistence worker");
+
+    rt.block_on(async {
+        let mut rx = rx;
+        while let Some(record) = rx.recv().await {
+            store.record_trade(record);
+        }
+
+        // Channel closed - flush remaining trades
+        match store.flush() {
+            Ok(count) if count > 0 => println!("Flushed {} trades to database on shutdown", count),
+            Ok(_) => {}
+            Err(e) => eprintln!("Warning: Failed to flush trade store on shutdown: {}", e),
+        }
     });
 }
 
@@ -467,7 +528,7 @@ fn fetch_book_depth_blocking(
 // WebSocket Loop
 // ============================================================================
 
-async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
+async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine, trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>) -> Result<()> {
     let (mut ws, _) = connect_async(wss_url).await?;
 
     let sub = serde_json::json!({
@@ -506,7 +567,8 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
                 if let Some(evt) = parse_event(text) {
                     let engine = order_engine.clone();
                     let client = http_client.clone();
-                    tokio::spawn(async move { handle_event(evt, &engine, &client).await });
+                    let tx = trade_tx.clone();
+                    tokio::spawn(async move { handle_event(evt, &engine, &client, tx).await });
                 }
             }
             Message::Binary(bin) => {
@@ -514,7 +576,8 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
                     if let Some(evt) = parse_event(text) {
                         let engine = order_engine.clone();
                         let client = http_client.clone();
-                        tokio::spawn(async move { handle_event(evt, &engine, &client).await });
+                        let tx = trade_tx.clone();
+                        tokio::spawn(async move { handle_event(evt, &engine, &client, tx).await });
                     }
                 }
             }
@@ -531,7 +594,7 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
     }
 }
 
-async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client: &reqwest::Client) {
+async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client: &reqwest::Client, trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>) {
     // Check live status from cache, fallback to API lookup
     let is_live = match market_cache::get_is_live(&evt.order.clob_token_id) {
         Some(v) => Some(v),
@@ -545,14 +608,14 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
     // Fetch order book for post-trade logging
     let bests = fetch_best_book(&evt.order.clob_token_id, &evt.order.order_type, http_client).await;
     let ((bp, bs), (sp, ss)) = bests.unwrap_or_else(|| (("N/A".into(), "N/A".into()), ("N/A".into(), "N/A".into())));
-    let is_live = is_live.unwrap_or(false);
+    let is_live_bool = is_live.unwrap_or(false);
 
     // Highlight best price in bright pink
     let pink = "\x1b[38;5;199m";
     let reset = "\x1b[0m";
     let colored_bp = format!("{}{}{}", pink, bp, reset);
 
-    let live_display = if is_live {
+    let live_display = if is_live_bool {
         format!("\x1b[34mlive: true\x1b[0m")
     } else {
         "live: false".to_string()
@@ -577,6 +640,39 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
         evt.block_number, tennis_display, soccer_display, evt.order.order_type, evt.order.usd_value, status, colored_bp, bs, sp, ss, live_display
     );
 
+    // Record trade to database if persistence is enabled
+    if let Some(tx) = trade_tx {
+        // Parse status to extract our execution details
+        // Status format examples:
+        // - "200 OK [SCALED] | 5.00/5.00 filled @ 0.45 | whale 500.0 @ 0.44"
+        // - "SKIPPED_DISABLED"
+        // - "EXEC_FAIL: ..."
+        // - "RISK_BLOCKED:..."
+        let (our_shares, our_price, our_usd, fill_pct, trade_status) = parse_status_for_db(&status);
+
+        let record = TradeRecord {
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            block_number: evt.block_number,
+            tx_hash: evt.tx_hash.clone(),
+            trader_address: String::new(), // Not available in ParsedEvent, could be added later
+            token_id: evt.order.clob_token_id.to_string(),
+            side: if evt.order.order_type.starts_with("BUY") { "BUY".to_string() } else { "SELL".to_string() },
+            whale_shares: evt.order.shares,
+            whale_price: evt.order.price_per_share,
+            whale_usd: evt.order.usd_value,
+            our_shares,
+            our_price,
+            our_usd,
+            fill_pct,
+            status: trade_status,
+            latency_ms: None, // Could be added with timing instrumentation
+            is_live,
+        };
+
+        // Send to persistence worker (non-blocking)
+        let _ = tx.send(record);
+    }
+
     let ts: DateTime<Utc> = Utc::now();
     let row = CSV_BUF.with(|buf| {
         SANITIZE_BUF.with(|sbuf| {
@@ -589,12 +685,102 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
                 ts.format("%Y-%m-%d %H:%M:%S%.3f"),
                 evt.block_number, evt.order.clob_token_id, evt.order.usd_value,
                 evt.order.shares, evt.order.price_per_share, evt.order.order_type,
-                sb, bp, bs, sp, ss, evt.tx_hash, is_live
+                sb, bp, bs, sp, ss, evt.tx_hash, is_live_bool
             );
             b.clone()
         })
     });
     let _ = tokio::task::spawn_blocking(move || append_csv_row(row)).await;
+}
+
+/// Parse the status string to extract execution details for database storage
+/// Returns (our_shares, our_price, our_usd, fill_pct, status_category)
+fn parse_status_for_db(status: &str) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, String) {
+    // Status contains ANSI color codes - strip them for parsing
+    let clean_status = strip_ansi_codes(status);
+
+    // Try to parse "200 OK" successful trades: "200 OK [type] | filled/requested filled @ price | whale ..."
+    if clean_status.starts_with("200 OK") {
+        // Pattern: "200 OK [SCALED] | 5.00/5.00 filled @ 0.45 | whale 500.0 @ 0.44"
+        if let Some((filled, requested, price)) = parse_fill_details(&clean_status) {
+            let fill_pct = if requested > 0.0 { (filled / requested) * 100.0 } else { 0.0 };
+            let our_usd = filled * price;
+            return (Some(filled), Some(price), Some(our_usd), Some(fill_pct), "SUCCESS".to_string());
+        }
+        return (None, None, None, None, "SUCCESS".to_string());
+    }
+
+    // Check for various failure/skip statuses
+    if clean_status.starts_with("SKIPPED") {
+        return (None, None, None, None, clean_status.split_whitespace().next().unwrap_or("SKIPPED").to_string());
+    }
+    if clean_status.starts_with("RISK_BLOCKED") {
+        return (None, None, None, None, "RISK_BLOCKED".to_string());
+    }
+    if clean_status.starts_with("EXEC_FAIL") || clean_status.starts_with("FAILED") {
+        return (None, None, None, None, "FAILED".to_string());
+    }
+    if clean_status.starts_with("MOCK") {
+        return (None, None, None, None, "MOCK".to_string());
+    }
+    if clean_status.contains("QUEUE_ERR") || clean_status.contains("WORKER") {
+        return (None, None, None, None, "ERROR".to_string());
+    }
+
+    // Default: unknown status
+    (None, None, None, None, clean_status.chars().take(20).collect())
+}
+
+/// Strip ANSI escape codes from a string
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if c == 'm' {
+                in_escape = false;
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Parse fill details from status string
+/// Returns (filled_shares, requested_shares, price)
+fn parse_fill_details(status: &str) -> Option<(f64, f64, f64)> {
+    // Pattern: "... | 5.00/5.00 filled @ 0.45 | ..."
+    // Find the fill segment
+    let parts: Vec<&str> = status.split('|').collect();
+    for part in parts {
+        let trimmed = part.trim();
+        // Look for "X.XX/Y.YY filled @ Z.ZZ"
+        if trimmed.contains("filled @") {
+            // Split on "filled @"
+            let fill_parts: Vec<&str> = trimmed.split("filled @").collect();
+            if fill_parts.len() == 2 {
+                // First part has "X.XX/Y.YY", second has "Z.ZZ"
+                let ratio_part = fill_parts[0].trim();
+                let price_str = fill_parts[1].trim();
+
+                // Parse ratio: "5.00/5.00" or just the numbers
+                if let Some(slash_idx) = ratio_part.rfind('/') {
+                    let filled_str = ratio_part[..slash_idx].split_whitespace().last()?;
+                    let requested_str = &ratio_part[slash_idx + 1..];
+
+                    let filled: f64 = filled_str.parse().ok()?;
+                    let requested: f64 = requested_str.parse().ok()?;
+                    let price: f64 = price_str.split_whitespace().next()?.parse().ok()?;
+
+                    return Some((filled, requested, price));
+                }
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================

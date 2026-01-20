@@ -200,6 +200,10 @@ pub struct Config {
     pub cb_sequence_window_secs: u64,
     pub cb_min_depth_usd: f64,
     pub cb_trip_duration_secs: u64,
+
+    // Database persistence settings
+    pub db_enabled: bool,
+    pub db_path: String,
 }
 
 impl Config {
@@ -365,6 +369,8 @@ impl Config {
             cb_sequence_window_secs: env_parse("CB_SEQUENCE_WINDOW_SECS", 30),
             cb_min_depth_usd: env_parse("CB_MIN_DEPTH_USD", 200.0),
             cb_trip_duration_secs: env_parse("CB_TRIP_DURATION_SECS", 120),
+            db_enabled: env_parse("DB_ENABLED", true),
+            db_path: env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string()),
         })
     }
     
@@ -671,5 +677,75 @@ mod tests {
         let (buf, _, mult) = get_tier_params(999.9, true, token_id);
         assert_eq!(buf, PRICE_BUFFER);
         assert_eq!(mult, 1.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test: DB Settings - defaults and environment variable parsing
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_db_enabled_defaults_to_true() {
+        // Clear any existing env var
+        unsafe { std::env::remove_var("DB_ENABLED"); }
+
+        // The default should be true (persistence enabled by default)
+        let result: bool = env_parse("DB_ENABLED", true);
+        assert!(result, "DB_ENABLED should default to true");
+    }
+
+    #[test]
+    fn test_db_enabled_can_be_disabled() {
+        unsafe { std::env::set_var("DB_ENABLED", "false"); }
+        let result: bool = env_parse("DB_ENABLED", true);
+        assert!(!result, "DB_ENABLED=false should disable persistence");
+        unsafe { std::env::remove_var("DB_ENABLED"); }
+    }
+
+    #[test]
+    fn test_db_path_defaults_to_trades_db() {
+        unsafe { std::env::remove_var("DB_PATH"); }
+        let path = std::env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string());
+        assert_eq!(path, "trades.db");
+    }
+
+    #[test]
+    fn test_db_path_can_be_customized() {
+        unsafe { std::env::set_var("DB_PATH", "/custom/path/mydb.sqlite"); }
+        let path = std::env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string());
+        assert_eq!(path, "/custom/path/mydb.sqlite");
+        unsafe { std::env::remove_var("DB_PATH"); }
+    }
+
+    #[test]
+    fn test_config_has_db_fields() {
+        // This test will fail until we add db_enabled and db_path to Config struct
+        unsafe {
+            std::env::set_var("DB_ENABLED", "false");
+            std::env::set_var("DB_PATH", "/test/path.db");
+        }
+
+        // Note: We can't actually call Config::from_env() in tests because it requires
+        // many other env vars (PRIVATE_KEY, etc.). Instead, we verify the fields exist
+        // by attempting to construct a Config with them.
+
+        // This will cause a compile error until the fields are added
+        let _test_config = Config {
+            private_key: "test".to_string(),
+            funder_address: None,
+            wss_url: "test".to_string(),
+            enable_trading: true,
+            mock_trading: false,
+            cb_large_trade_shares: 1500.0,
+            cb_consecutive_trigger: 2,
+            cb_sequence_window_secs: 30,
+            cb_min_depth_usd: 200.0,
+            cb_trip_duration_secs: 120,
+            db_enabled: false,
+            db_path: "/test/path.db".to_string(),
+        };
+
+        unsafe {
+            std::env::remove_var("DB_ENABLED");
+            std::env::remove_var("DB_PATH");
+        }
     }
 }
