@@ -21,6 +21,7 @@ use std::path::Path;
 
 pub mod profiler;
 pub use profiler::{PROFILER, ops};
+pub mod aggregator;
 pub mod config;
 pub mod market_cache;
 pub mod models;
