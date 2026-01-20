@@ -29,6 +29,7 @@ pub mod risk_guard;
 pub mod settings;
 pub mod soccer_markets;
 pub mod tennis_markets;
+pub mod trader_state;
 
 // TODO: Fix imports in resubmit_tests - commented out temporarily
 // #[cfg(test)]

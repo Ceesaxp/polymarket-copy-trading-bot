@@ -353,4 +353,93 @@ impl TradeStore {
 
         Ok(positions)
     }
+
+    /// Update or insert trader statistics
+    ///
+    /// # Arguments
+    /// * `address` - Trader address
+    /// * `label` - Trader label
+    /// * `total_trades` - Total number of trades
+    /// * `successful_trades` - Number of successful trades
+    /// * `failed_trades` - Number of failed trades
+    /// * `total_copied_usd` - Total USD copied
+    /// * `last_trade_ts` - Last trade timestamp (milliseconds)
+    /// * `daily_reset_ts` - Daily reset timestamp (milliseconds)
+    ///
+    /// # Returns
+    /// * `Result<()>` - Ok if updated successfully
+    pub fn upsert_trader_stats(
+        &self,
+        address: &str,
+        label: &str,
+        total_trades: u32,
+        successful_trades: u32,
+        failed_trades: u32,
+        total_copied_usd: f64,
+        last_trade_ts: Option<i64>,
+        daily_reset_ts: i64,
+    ) -> Result<()> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        self.conn.execute(
+            "INSERT INTO trader_stats (
+                trader_address, label, total_trades, successful_trades, failed_trades,
+                total_copied_usd, last_trade_ts, daily_reset_ts, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(trader_address) DO UPDATE SET
+                label = excluded.label,
+                total_trades = excluded.total_trades,
+                successful_trades = excluded.successful_trades,
+                failed_trades = excluded.failed_trades,
+                total_copied_usd = excluded.total_copied_usd,
+                last_trade_ts = excluded.last_trade_ts,
+                daily_reset_ts = excluded.daily_reset_ts,
+                updated_at = excluded.updated_at",
+            params![
+                address,
+                label,
+                total_trades,
+                successful_trades,
+                failed_trades,
+                total_copied_usd,
+                last_trade_ts,
+                daily_reset_ts,
+                now_ms,
+                now_ms,
+            ],
+        ).context("Failed to upsert trader stats")?;
+
+        Ok(())
+    }
+
+    /// Get all trader statistics
+    ///
+    /// # Returns
+    /// * `Result<Vec<(address, label, total_trades, successful_trades, failed_trades, total_copied_usd, last_trade_ts, daily_reset_ts)>>`
+    pub fn get_all_trader_stats(&self) -> Result<Vec<(String, String, u32, u32, u32, f64, Option<i64>, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT trader_address, label, total_trades, successful_trades, failed_trades,
+                    total_copied_usd, last_trade_ts, daily_reset_ts
+             FROM trader_stats
+             ORDER BY trader_address"
+        ).context("Failed to prepare get_all_trader_stats query")?;
+
+        let stats = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? as u32,
+                row.get::<_, i64>(3)? as u32,
+                row.get::<_, i64>(4)? as u32,
+                row.get::<_, f64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })
+        .context("Failed to execute get_all_trader_stats query")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("Failed to collect trader stats")?;
+
+        Ok(stats)
+    }
 }

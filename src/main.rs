@@ -16,7 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 mod models;
@@ -28,6 +28,7 @@ use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
 use pm_whale_follower::persistence::{TradeStore, TradeRecord};
 use pm_whale_follower::config::traders::TradersConfig;
+use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
 use models::*;
 use std::sync::Arc;
 
@@ -91,9 +92,13 @@ async fn main() -> Result<()> {
 
     let cfg = Config::from_env()?;
 
+    // Initialize trader state manager
+    let trader_manager = Arc::new(Mutex::new(TraderManager::new(&cfg.traders)));
+    println!("Trader state manager initialized for {} traders", cfg.traders.len());
+
     // Initialize trade persistence channel (if enabled)
     // Uses a dedicated background thread to handle SQLite operations
-    let trade_tx: Option<mpsc::UnboundedSender<TradeRecord>> = if cfg.db_enabled {
+    let (trade_tx, stats_persist_path) = if cfg.db_enabled {
         let db_path = cfg.db_path.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TradeRecord>();
 
@@ -103,10 +108,10 @@ async fn main() -> Result<()> {
         });
 
         println!("Trade persistence enabled: {}", cfg.db_path);
-        Some(tx)
+        (Some(tx), Some(cfg.db_path.clone()))
     } else {
         println!("Trade persistence disabled");
-        None
+        (None, None)
     };
 
     let (client, creds) = build_worker_state(
@@ -150,7 +155,7 @@ async fn main() -> Result<()> {
     });
 
     loop {
-        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone()).await {
+        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone(), Arc::clone(&trader_manager), stats_persist_path.clone()).await {
             eprintln!("⚠️ WS error: {e}. Reconnecting...");
             tokio::time::sleep(WS_RECONNECT_DELAY).await;
         }
@@ -552,7 +557,13 @@ fn build_subscription_message(topic_filter: Vec<String>) -> String {
     }).to_string()
 }
 
-async fn run_ws_loop(cfg: &Config, order_engine: &OrderEngine, trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>) -> Result<()> {
+async fn run_ws_loop(
+    cfg: &Config,
+    order_engine: &OrderEngine,
+    trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
+    trader_manager: Arc<Mutex<TraderManager>>,
+    stats_persist_path: Option<String>,
+) -> Result<()> {
     let (mut ws, _) = connect_async(&cfg.wss_url).await?;
 
     // Build topic filter from traders config
@@ -595,7 +606,8 @@ async fn run_ws_loop(cfg: &Config, order_engine: &OrderEngine, trade_tx: Option<
                     let engine = order_engine.clone();
                     let client = http_client.clone();
                     let tx = trade_tx.clone();
-                    tokio::spawn(async move { handle_event(evt, &engine, &client, tx).await });
+                    let tm = Arc::clone(&trader_manager);
+                    tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm).await });
                 }
             }
             Message::Binary(bin) => {
@@ -604,7 +616,8 @@ async fn run_ws_loop(cfg: &Config, order_engine: &OrderEngine, trade_tx: Option<
                         let engine = order_engine.clone();
                         let client = http_client.clone();
                         let tx = trade_tx.clone();
-                        tokio::spawn(async move { handle_event(evt, &engine, &client, tx).await });
+                        let tm = Arc::clone(&trader_manager);
+                        tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm).await });
                     }
                 }
             }
@@ -613,15 +626,56 @@ async fn run_ws_loop(cfg: &Config, order_engine: &OrderEngine, trade_tx: Option<
             _ => {}
         }
 
-        // Periodic heartbeat to show bot is alive
+        // Periodic heartbeat to show bot is alive and check daily reset
         if last_heartbeat.elapsed() >= heartbeat_interval {
-            println!("💓 Heartbeat: listening for trades...");
+            // Check daily reset
+            {
+                let mut manager = trader_manager.lock().await;
+                manager.check_daily_reset();
+            }
+
+            // Log summary stats
+            let stats = {
+                let manager = trader_manager.lock().await;
+                manager.get_summary_stats()
+            };
+
+            println!(
+                "💓 Heartbeat: {} traders | {} trades today | {}/{}/{} (success/partial/failed) | ${:.2} total copied",
+                stats.total_traders,
+                stats.total_trades,
+                stats.total_successful,
+                stats.total_partial,
+                stats.total_failed,
+                stats.total_copied_usd
+            );
+
+            // Persist trader stats to database (if enabled)
+            if let Some(ref db_path) = stats_persist_path {
+                let db_path = db_path.clone();
+                let tm = Arc::clone(&trader_manager);
+                tokio::task::spawn_blocking(move || {
+                    if let Ok(store) = TradeStore::new(&db_path) {
+                        let manager = tokio::runtime::Handle::current().block_on(tm.lock());
+                        if let Err(e) = manager.persist_to_db(&store) {
+                            eprintln!("Warning: Failed to persist trader stats: {}", e);
+                        }
+                    }
+                });
+            }
+
             last_heartbeat = std::time::Instant::now();
         }
     }
 }
 
-async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client: &reqwest::Client, trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>) {
+async fn handle_event(
+    evt: ParsedEvent,
+    order_engine: &OrderEngine,
+    http_client: &reqwest::Client,
+    trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
+    trader_manager: Arc<Mutex<TraderManager>>,
+) {
     // Check live status from cache, fallback to API lookup
     let is_live = match market_cache::get_is_live(&evt.order.clob_token_id) {
         Some(v) => Some(v),
@@ -667,16 +721,36 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
         evt.block_number, tennis_display, soccer_display, evt.order.order_type, evt.order.usd_value, status, colored_bp, bs, sp, ss, live_display
     );
 
+    // Parse status to determine trade outcome and record in trader manager
+    let (our_shares_opt, our_price_opt, our_usd_opt, fill_pct_opt, trade_status_str) = parse_status_for_db(&status);
+
+    // Determine TradeStatus enum from status string
+    let trade_status = if trade_status_str == "SUCCESS" {
+        // Check fill percentage to distinguish full success from partial
+        if let Some(fill_pct) = fill_pct_opt {
+            if fill_pct >= 90.0 {
+                TradeStatus::Success
+            } else {
+                TradeStatus::Partial
+            }
+        } else {
+            TradeStatus::Success
+        }
+    } else if trade_status_str.starts_with("SKIPPED") {
+        TradeStatus::Skipped
+    } else {
+        TradeStatus::Failed
+    };
+
+    // Record trade in trader manager (with USD amount from our execution)
+    let usd_amount = our_usd_opt.unwrap_or(0.0);
+    {
+        let mut manager = trader_manager.lock().await;
+        manager.record_trade(&evt.trader_address, usd_amount, trade_status);
+    }
+
     // Record trade to database if persistence is enabled
     if let Some(tx) = trade_tx {
-        // Parse status to extract our execution details
-        // Status format examples:
-        // - "200 OK [SCALED] | 5.00/5.00 filled @ 0.45 | whale 500.0 @ 0.44"
-        // - "SKIPPED_DISABLED"
-        // - "EXEC_FAIL: ..."
-        // - "RISK_BLOCKED:..."
-        let (our_shares, our_price, our_usd, fill_pct, trade_status) = parse_status_for_db(&status);
-
         let record = TradeRecord {
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
             block_number: evt.block_number,
@@ -687,11 +761,11 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
             whale_shares: evt.order.shares,
             whale_price: evt.order.price_per_share,
             whale_usd: evt.order.usd_value,
-            our_shares,
-            our_price,
-            our_usd,
-            fill_pct,
-            status: trade_status,
+            our_shares: our_shares_opt,
+            our_price: our_price_opt,
+            our_usd: our_usd_opt,
+            fill_pct: fill_pct_opt,
+            status: trade_status_str,
             latency_ms: None, // Could be added with timing instrumentation
             is_live,
         };
