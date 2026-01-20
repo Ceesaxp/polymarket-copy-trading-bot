@@ -34,3 +34,6 @@
 
 # Cargo config (local overrides)
 .cargo/
+
+# Agents
+.claude/

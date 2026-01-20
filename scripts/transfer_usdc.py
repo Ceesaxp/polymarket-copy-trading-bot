@@ -60,7 +60,11 @@ def main():
         private_key = "0x" + private_key
 
     # Polymarket proxy wallet (destination)
-    PROXY_WALLET = "0xec1813ed7b60a9b5880e546b444cbfed51428eb4"
+    PROXY_WALLET = os.getenv("PROXY_WALLET")
+    if not PROXY_WALLET:
+        print("ERROR: PROXY_WALLET not set in .env")
+        print("       Set it to your Polymarket proxy wallet address")
+        sys.exit(1)
 
     # Connect to Polygon (try multiple RPCs)
     w3 = None

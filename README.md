@@ -38,7 +38,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ```bash
 git clone https://github.com/terauss/Polymarket-Copy-Trading-Bot.git
-git clone 
 cd Polymarket-Copy-Trading-Bot
 ```
 
@@ -167,12 +166,47 @@ cargo run --release --bin mempool_monitor
 
 # Monitor your own fills only (no trading)
 cargo run --release --bin trade_monitor
-
-# Validate configuration
-cargo run --release --bin validate_setup
 ```
 
-### 7.2 Building for Production
+### 7.2 Utility Binaries
+
+```bash
+# Validate configuration before running
+cargo run --release --bin validate_setup
+
+# Check wallet balances (USDC, MATIC)
+cargo run --release --bin check_balance
+
+# Approve token allowances for trading
+cargo run --release --bin approve_allowances
+
+# Validate Polymarket profile/API credentials
+cargo run --release --bin validate_profile
+
+# Debug order signing (for troubleshooting)
+cargo run --release --bin debug_signing
+```
+
+### 7.3 Helper Scripts (Python)
+
+Located in `scripts/` directory. Require Python 3 and dependencies from `scripts/pyproject.toml`.
+
+```bash
+# Transfer USDC to Polymarket proxy wallet
+python scripts/transfer_usdc.py
+
+# Build/refresh market caches
+python scripts/build_live_cache.py
+python scripts/build_sports_cache.py
+
+# Monitor PNL divergence between you and whale
+python scripts/realtime_divergence.py
+
+# Test order signing (debugging)
+python scripts/test_order.py
+```
+
+### 7.4 Building for Production
 
 ```bash
 # Optimized release build

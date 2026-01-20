@@ -10,9 +10,10 @@ Common issues and their solutions.
 4. [Trading Issues](#4-trading-issues)
 5. [Performance Issues](#5-performance-issues)
 6. [General Errors](#6-general-errors)
-7. [Getting More Help](#7-getting-more-help)
-8. [Prevention Tips](#8-prevention-tips)
-9. [Common Mistakes to Avoid](#9-common-mistakes-to-avoid)
+7. [Polymarket Account Issues](#7-polymarket-account-issues)
+8. [Getting More Help](#8-getting-more-help)
+9. [Prevention Tips](#9-prevention-tips)
+10. [Common Mistakes to Avoid](#10-common-mistakes-to-avoid)
 
 ---
 
@@ -231,19 +232,22 @@ TARGET_WHALE_ADDRESS=204f72f35326db932158cba6adff0b9a1da95e14
 **Problem:** Bot runs but doesn't see any whale trades.
 
 **Solutions:**
-1. **Verify whale address:**
+1. **Check startup messages:**
+   - You should see: `🔌 Connected. Subscribing...`
+   - Then: `✅ Subscription confirmed. Listening for whale trades...`
+   - Periodic: `💓 Heartbeat: listening for trades...` (every 60 seconds)
+   - If you don't see the confirmation, there may be a WebSocket issue
+
+2. **Verify whale address:**
    - Check `TARGET_WHALE_ADDRESS` is correct
    - Confirm whale is actively trading
    - Whale may be inactive
-
-2. **Check connection:**
-   - Bot should show "🔌 Connected. Subscribing..."
-   - If not, see connection issues above
 
 3. **Wait longer:**
    - Whales don't trade constantly
    - May take minutes/hours to see trades
    - Check CSV log file for any activity
+   - The heartbeat confirms the bot is still running
 
 4. **Verify monitored addresses:**
    - Check if Polymarket contract addresses changed
@@ -261,23 +265,24 @@ TARGET_WHALE_ADDRESS=204f72f35326db932158cba6adff0b9a1da95e14
 
 ---
 
-### "CB_BLOCKED" messages
+### "RISK_BLOCKED" or "CB_BLOCKED" messages
 
-**Problem:** Circuit breaker is blocking trades.
+**Problem:** Risk Guard (safety system) is blocking trades.
 
-**Explanation:** This is a safety feature. Bot detected potentially dangerous conditions (low liquidity, rapid trading, etc.).
+**Explanation:** This is a safety feature. Bot detected potentially dangerous conditions (low liquidity, rapid consecutive trades on same market, etc.).
 
 **Solutions:**
-1. **Wait:** Circuit breaker resets after configured duration (default: 2 minutes)
+1. **Wait:** Risk Guard resets after configured duration (default: 2 minutes)
 
-2. **Adjust settings:** If blocking too many trades, adjust circuit breaker settings:
+2. **Adjust settings:** If blocking too many trades, adjust Risk Guard settings in `.env`:
    ```env
-   CB_MIN_DEPTH_USD=100.0        # Lower = less strict
-   CB_CONSECUTIVE_TRIGGER=3      # Higher = less strict
-   CB_SEQUENCE_WINDOW_SECS=60    # Longer = less strict
+   CB_MIN_DEPTH_USD=100.0        # Minimum order book depth (lower = less strict)
+   CB_CONSECUTIVE_TRIGGER=3      # Consecutive large trades before blocking (higher = less strict)
+   CB_SEQUENCE_WINDOW_SECS=60    # Time window for consecutive trade detection (longer = less strict)
+   CB_TRIP_DURATION_SECS=120     # How long to block after tripping (shorter = recover faster)
    ```
 
-3. **Check market:** May be genuinely dangerous conditions (low liquidity, manipulation)
+3. **Check market:** May be genuinely dangerous conditions (low liquidity, potential manipulation)
 
 ---
 
@@ -495,7 +500,47 @@ TARGET_WHALE_ADDRESS=204f72f35326db932158cba6adff0b9a1da95e14
 
 ---
 
-## 7. Getting More Help
+## 7. Polymarket Account Issues
+
+### Portfolio shows value but no positions visible
+
+**Problem:** Polymarket UI shows portfolio value but positions list is empty.
+
+**Explanation:** Your value is likely in **redeemable positions** (winning bets from resolved markets) that need to be claimed.
+
+**Solutions:**
+1. **Check for redeemable positions in UI:**
+   - Go to your Polymarket profile
+   - Look for "Claim" or "Redeem" buttons
+   - Check the Activity tab for resolved markets
+
+2. **Query redeemable positions via API:**
+   ```bash
+   curl "https://data-api.polymarket.com/positions?user=YOUR_WALLET_ADDRESS&redeemable=true"
+   ```
+
+3. **Claim your winnings:**
+   - Use the Polymarket web interface (easiest)
+   - There's currently no official CLOB API endpoint for programmatic redemption
+
+---
+
+### Can't programmatically claim/redeem winning positions
+
+**Problem:** Want to automate claiming winnings but no API endpoint exists.
+
+**Explanation:** Polymarket positions are held in a **Safe (multisig proxy)**, not directly in your EOA wallet. This requires special transaction handling that isn't exposed via the CLOB API.
+
+**Current Options:**
+1. **Use the web UI** - Click "Claim" in the interface (recommended)
+2. **Use third-party packages** - `polymarket-apis` Python package supports Safe wallets
+3. **Wait for official support** - There's an open feature request for a `/redeem` endpoint
+
+**Note:** This is a known limitation. The community has requested this feature.
+
+---
+
+## 8. Getting More Help
 
 If you've tried these solutions and still have issues:
 
@@ -525,7 +570,7 @@ If you've tried these solutions and still have issues:
 
 ---
 
-## 8. Prevention Tips
+## 9. Prevention Tips
 
 **Before running:**
 - ✅ Test in mock mode first
@@ -548,7 +593,7 @@ If you've tried these solutions and still have issues:
 
 ---
 
-## 9. Common Mistakes to Avoid
+## 10. Common Mistakes to Avoid
 
 ❌ **Using main wallet:** Use separate wallet for bot  
 ❌ **Wrong address format:** Check address formats carefully  

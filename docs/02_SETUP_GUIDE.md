@@ -325,10 +325,15 @@ You'll see messages like:
 ```
 🚀 Starting trader. Trading: true, Mock: false
 🔌 Connected. Subscribing...
+✅ Subscription confirmed. Listening for whale trades...
+💓 Heartbeat: listening for trades...
 ⚡ [B:12345] BUY_FILL | $100 | 200 OK | ...
 ```
 
 **What each message means:**
+- `🔌 Connected...` = WebSocket connected, sending subscription
+- `✅ Subscription confirmed...` = Successfully subscribed to whale's trades
+- `💓 Heartbeat...` = Periodic confirmation bot is running (every 60 seconds)
 - `[B:12345]` = Block number where trade was detected
 - `BUY_FILL` = Type of trade (BUY or SELL)
 - `$100` = USD value of whale's trade
