@@ -763,17 +763,60 @@ cargo run --bin position_monitor -- --json
 
 ---
 
+### Step 5.4: Live Positions from Polymarket Data API ✅ COMPLETE
+
+**Files created**:
+- `src/live_positions.rs` (476 lines, 11 tests)
+- `src/bin/live_positions.rs` (290 lines, 15 tests)
+
+**Implementation**: ✅ ALL COMPLETE
+- [x] Fetch live positions from Polymarket Data API (`https://data-api.polymarket.com/positions`)
+- [x] `LivePosition` struct with full API response fields (size, avgPrice, currentValue, cashPnl, etc.)
+- [x] `FetchOptions` for customization (limit, size_threshold, offset, redeemable)
+- [x] `LivePositionsSummary` for aggregating position statistics
+- [x] Address normalization and validation
+- [x] CLI tool with multiple output formats (table, csv, json)
+- [x] Support for single address or all configured traders
+- [x] `--summary-only` flag for aggregated view
+
+**Measurable Result**:
+```bash
+# Fetch positions for a specific address
+cargo run --bin live_positions -- 0x1234...
+
+# Fetch positions for all configured traders
+cargo run --bin live_positions -- --all-traders
+
+# JSON output for automation
+cargo run --bin live_positions -- --format json
+
+# Summary only
+cargo run --bin live_positions -- --all-traders --summary-only
+```
+
+**Testing**: ✅ 26 tests (11 library + 15 CLI)
+- [x] Test: Address normalization (with/without 0x, uppercase)
+- [x] Test: FetchOptions builder pattern
+- [x] Test: LivePosition JSON deserialization
+- [x] Test: Partial deserialization (missing fields)
+- [x] Test: Summary calculation
+- [x] Test: CLI argument parsing
+- [x] Test: CSV escaping
+
+---
+
 ### Phase 5 Completion Checklist ✅ COMPLETE
 
-- [x] All Step 5.x tasks completed (5.1, 5.2, 5.3)
-- [x] All unit tests pass: 41 position_monitor tests + 19 prices module tests
+- [x] All Step 5.x tasks completed (5.1, 5.2, 5.3, 5.4)
+- [x] All unit tests pass: 41 position_monitor tests + 19 prices module tests + 26 live_positions tests
 - [x] P&L displays correctly for real positions
 - [x] Price caching works with rate limiting and TTL
 - [x] Daily snapshot persistence for P&L tracking
 - [x] JSON output for automation
+- [x] Live positions fetched directly from Polymarket Data API
 - [x] Documentation updated in code
 
-**Phase 5 Deliverable**: Position monitor shows real-time P&L with live market prices, portfolio summary, daily P&L tracking, and JSON export. ✅
+**Phase 5 Deliverable**: Position monitor shows real-time P&L with live market prices, portfolio summary, daily P&L tracking, JSON export, and live positions from Polymarket Data API. ✅
 
 ---
 
@@ -843,12 +886,14 @@ src/
   trader_state.rs            # NEW
   api.rs                     # NEW (optional)
   prices.rs                  # NEW (Phase 5)
+  live_positions.rs          # NEW (Phase 5.4)
 
   bin/
     position_monitor.rs      # NEW
     trade_history.rs         # NEW
     trader_comparison.rs     # NEW
     import_csv.rs            # NEW (Phase 4)
+    live_positions.rs        # NEW (Phase 5.4)
     # ... existing bins ...
 
 research/
@@ -894,6 +939,7 @@ research/
 - [x] Step 5.1: Price Fetcher Module ✅ (19 tests)
 - [x] Step 5.2: Enhanced Position Monitor with P&L ✅ (20 tests)
 - [x] Step 5.3: Portfolio Summary Statistics ✅ (41 tests)
+- [x] Step 5.4: Live Positions from Polymarket Data API ✅ (26 tests)
 - [x] Phase 5 Complete ✅
 
 ---
@@ -905,9 +951,9 @@ All 5 phases implemented with comprehensive test coverage:
 - **Phase 2**: Multi-Trader Monitoring
 - **Phase 3**: Trade Aggregation
 - **Phase 4**: Research Tooling (CSV Import, API, Python Scripts)
-- **Phase 5**: Live P&L Tracking (Price Fetcher, Portfolio Summary, Daily P&L)
+- **Phase 5**: Live P&L Tracking (Price Fetcher, Portfolio Summary, Daily P&L, Live Positions API)
 
-Total tests: 203+ library tests + 41 position_monitor tests
+Total tests: 230+ tests (library + CLI binaries)
 
 ---
 

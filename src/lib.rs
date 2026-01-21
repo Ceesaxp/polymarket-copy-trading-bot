@@ -24,6 +24,7 @@ pub use profiler::{PROFILER, ops};
 pub mod aggregator;
 pub mod api;
 pub mod config;
+pub mod live_positions;
 pub mod market_cache;
 pub mod models;
 pub mod persistence;
