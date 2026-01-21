@@ -354,7 +354,7 @@ fn order_worker(
 ) {
     let mut client_mut = (*client).clone();
     while let Some(work) = rx.blocking_recv() {
-        let status = process_order(&work.event.order, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live);
+        let status = process_order(&work.event.order, work.event.trader_min_shares, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live);
         let _ = work.respond_to.send(status);
     }
 }
@@ -365,6 +365,7 @@ fn order_worker(
 
 fn process_order(
     info: &OrderInfo,
+    trader_min_shares: f64,
     client: &mut RustClobClient,
     creds: &PreparedCreds,
     enable_trading: bool,
@@ -380,9 +381,11 @@ fn process_order(
     let whale_shares = info.shares;
     let whale_price = info.price_per_share;
 
-    // Skip small trades to avoid negative expected value after fees
-    if should_skip_trade(whale_shares) {
-        return format!("SKIPPED_SMALL (<{:.0} shares)", MIN_WHALE_SHARES_TO_COPY);
+    // Skip small trades using per-trader threshold from traders.json
+    // Falls back to global MIN_WHALE_SHARES_TO_COPY if trader_min_shares is 0
+    let min_threshold = if trader_min_shares > 0.0 { trader_min_shares } else { MIN_WHALE_SHARES_TO_COPY };
+    if whale_shares < min_threshold {
+        return format!("SKIPPED_SMALL (<{:.0} shares)", min_threshold);
     }
 
     // Risk guard safety check
@@ -1462,7 +1465,8 @@ fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<Parse
     let trader_address = extract_address_from_topic(trader_topic)?;
 
     // Look up trader in config (if provided)
-    let trader_label = if let Some(traders_cfg) = traders {
+    // Returns (label, min_shares) tuple
+    let (trader_label, trader_min_shares) = if let Some(traders_cfg) = traders {
         // Try to find trader by topic hex (case-insensitive for robustness)
         // WebSocket may return different case than our stored topics
         let topic_lower = trader_topic.to_lowercase();
@@ -1470,7 +1474,7 @@ fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<Parse
             if !trader_cfg.enabled {
                 return None; // Skip disabled traders
             }
-            trader_cfg.label.clone()
+            (trader_cfg.label.clone(), trader_cfg.min_shares)
         } else {
             // Debug: Log when we receive an event but don't match a trader
             // This helps diagnose subscription/filtering issues
@@ -1485,7 +1489,8 @@ fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<Parse
         // Fall back to checking TARGET_TOPIC_HEX
         let has_target = trader_topic.eq_ignore_ascii_case(TARGET_TOPIC_HEX.as_str());
         if !has_target { return None; }
-        String::new()
+        // Legacy mode uses global MIN_WHALE_SHARES_TO_COPY
+        (String::new(), MIN_WHALE_SHARES_TO_COPY)
     };
 
     let hex_data = &result.data;
@@ -1525,6 +1530,7 @@ fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<Parse
         tx_hash: result.transaction_hash.unwrap_or_default(),
         trader_address,
         trader_label,
+        trader_min_shares,
         order: OrderInfo {
             order_type,
             clob_token_id: u256_to_dec_cached(&token_bytes, &clob_id),

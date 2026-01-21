@@ -28,6 +28,9 @@ pub struct ParsedEvent {
     /// Empty string if trader is unknown or not yet populated
     #[allow(dead_code)] // Reserved for future logging/metrics use
     pub trader_label: String,
+    /// Minimum shares threshold for this trader (from traders.json min_shares)
+    /// Used to filter out small trades on a per-trader basis
+    pub trader_min_shares: f64,
     pub order: OrderInfo,
 }
 
@@ -114,6 +117,7 @@ mod tests {
             tx_hash: "0xabc123".to_string(),
             trader_address: "abc123def456789012345678901234567890abcd".to_string(),
             trader_label: "Whale1".to_string(),
+            trader_min_shares: 75.0,
             order: OrderInfo {
                 order_type: "BUY_FILL".to_string(),
                 clob_token_id: Arc::from("123456"),
@@ -125,6 +129,7 @@ mod tests {
 
         assert_eq!(event.trader_address, "abc123def456789012345678901234567890abcd");
         assert_eq!(event.trader_label, "Whale1");
+        assert_eq!(event.trader_min_shares, 75.0);
     }
 
     /// Test that ParsedEvent trader fields can be empty strings (for unknown traders)
@@ -135,6 +140,7 @@ mod tests {
             tx_hash: "0xabc123".to_string(),
             trader_address: String::new(),
             trader_label: String::new(),
+            trader_min_shares: 0.0,
             order: OrderInfo {
                 order_type: "BUY_FILL".to_string(),
                 clob_token_id: Arc::from("123456"),
@@ -156,6 +162,7 @@ mod tests {
             tx_hash: "0xabc123".to_string(),
             trader_address: "def456def456789012345678901234567890def4".to_string(),
             trader_label: "TopTrader".to_string(),
+            trader_min_shares: 100.0,
             order: OrderInfo {
                 order_type: "SELL_FILL".to_string(),
                 clob_token_id: Arc::from("789012"),
@@ -169,6 +176,7 @@ mod tests {
 
         assert_eq!(event2.trader_address, "def456def456789012345678901234567890def4");
         assert_eq!(event2.trader_label, "TopTrader");
+        assert_eq!(event2.trader_min_shares, 100.0);
         assert_eq!(event2.block_number, 12345);
     }
 }
