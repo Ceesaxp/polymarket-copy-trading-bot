@@ -644,25 +644,30 @@ python backtest_strategy.py --scale 0.5 --min-shares 10 -v
 - Shows total portfolio value and daily P&L change
 - Price caching to avoid API rate limits
 
-### Step 5.1: Price Fetcher Module
+### Step 5.1: Price Fetcher Module ✅ COMPLETE
 
-**Files to create**:
-- `src/prices.rs`
+**Files created**:
+- `src/prices.rs` (530 lines, 19 tests)
 
-**Implementation**:
-- [ ] Define `PriceCache` with TTL (default: 30 seconds)
-- [ ] Implement `fetch_price(token_id, side)` using CLOB API
-- [ ] Implement batch price fetching for multiple tokens
-- [ ] Handle API errors gracefully (return cached or None)
-- [ ] Add rate limiting (max 10 requests/second)
+**Implementation**: ✅ ALL COMPLETE
+- [x] Define `PriceCache` with TTL (default: 30 seconds)
+- [x] Define `PriceInfo` with bid_price, ask_price, timestamp
+- [x] Implement `fetch_price(token_id)` using CLOB `/book` API
+- [x] Implement `get_or_fetch_price()` - cache-first approach
+- [x] Implement `fetch_prices_batch()` for multiple tokens
+- [x] Handle API errors gracefully (return cached or None)
+- [x] Add rate limiting (max 10 requests/second, configurable)
+- [x] Graceful fallback: `get_or_fetch_price_with_fallback()` returns stale cache on API error
 
-**API Endpoint**: `GET https://clob.polymarket.com/price?token_id=<id>&side=<buy|sell>`
+**API Endpoint**: `GET https://clob.polymarket.com/book?token_id=<id>`
 
-**Testing**:
-- [ ] Test: Cache returns cached price within TTL
-- [ ] Test: Cache refreshes after TTL expires
-- [ ] Test: API errors don't crash, return cached value
-- [ ] Test: Rate limiting works correctly
+**Testing**: ✅ 19 tests (18 pass, 1 ignored network test)
+- [x] Test: Cache returns cached price within TTL
+- [x] Test: Cache refreshes after TTL expires
+- [x] Test: API errors return cached value gracefully
+- [x] Test: Rate limiting delays requests appropriately
+- [x] Test: Batch operations with caching
+- [x] Test: Fallback returns stale cache on API error
 
 ---
 
