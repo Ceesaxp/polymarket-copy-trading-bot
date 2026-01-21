@@ -1,0 +1,10 @@
+# Research scripts dependencies
+pandas>=2.0.0
+httpx>=0.24.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+sqlite3  # Built-in, listed for documentation
+jupyter>=1.0.0
+notebook>=7.0.0
+python-dotenv>=1.0.0
+tabulate>=0.9.0

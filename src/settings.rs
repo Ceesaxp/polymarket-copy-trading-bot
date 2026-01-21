@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::risk_guard;
 use crate::tennis_markets;
 use crate::soccer_markets;
+use crate::config::traders::TradersConfig;
 
 // ============================================================================
 // Blockchain Constants
@@ -201,6 +202,22 @@ pub struct Config {
     pub cb_sequence_window_secs: u64,
     pub cb_min_depth_usd: f64,
     pub cb_trip_duration_secs: u64,
+
+    // Database persistence settings
+    pub db_enabled: bool,
+    pub db_path: String,
+
+    // Trader configuration (multi-trader monitoring)
+    pub traders: TradersConfig,
+
+    // Trade aggregation settings
+    pub agg_enabled: bool,
+    pub agg_window_ms: u64,
+    pub agg_bypass_shares: f64,
+
+    // HTTP API settings
+    pub api_enabled: bool,
+    pub api_port: u16,
 }
 
 impl Config {
@@ -354,7 +371,11 @@ impl Config {
         let mock_trading = env::var("MOCK_TRADING")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
-        
+
+        // Load trader configuration (from file or env var)
+        let traders = TradersConfig::load()
+            .map_err(|e| anyhow::anyhow!("Failed to load trader configuration: {}", e))?;
+
         Ok(Self {
             private_key,
             funder_address,
@@ -366,6 +387,14 @@ impl Config {
             cb_sequence_window_secs: env_parse("CB_SEQUENCE_WINDOW_SECS", 30),
             cb_min_depth_usd: env_parse("CB_MIN_DEPTH_USD", 200.0),
             cb_trip_duration_secs: env_parse("CB_TRIP_DURATION_SECS", 120),
+            db_enabled: env_parse("DB_ENABLED", true),
+            db_path: env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string()),
+            traders,
+            agg_enabled: env_parse_bool("AGG_ENABLED", false),
+            agg_window_ms: env_parse("AGG_WINDOW_MS", 800),
+            agg_bypass_shares: env_parse("AGG_BYPASS_SHARES", 4000.0),
+            api_enabled: env_parse_bool("API_ENABLED", false),
+            api_port: env_parse("API_PORT", 8080),
         })
     }
     
@@ -386,6 +415,13 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
     env::var(key)
         .ok()
         .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Parse boolean env var with support for "true", "1", "false", "0"
+fn env_parse_bool(key: &str, default: bool) -> bool {
+    env::var(key)
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(default)
 }
 
@@ -672,5 +708,256 @@ mod tests {
         let (buf, _, mult) = get_tier_params(999.9, true, token_id);
         assert_eq!(buf, PRICE_BUFFER);
         assert_eq!(mult, 1.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Test: DB Settings - defaults and environment variable parsing
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_db_enabled_defaults_to_true() {
+        // Clear any existing env var
+        unsafe { std::env::remove_var("DB_ENABLED"); }
+
+        // The default should be true (persistence enabled by default)
+        let result: bool = env_parse("DB_ENABLED", true);
+        assert!(result, "DB_ENABLED should default to true");
+    }
+
+    #[test]
+    fn test_db_enabled_can_be_disabled() {
+        unsafe { std::env::set_var("DB_ENABLED", "false"); }
+        let result: bool = env_parse("DB_ENABLED", true);
+        assert!(!result, "DB_ENABLED=false should disable persistence");
+        unsafe { std::env::remove_var("DB_ENABLED"); }
+    }
+
+    #[test]
+    fn test_db_path_defaults_to_trades_db() {
+        unsafe { std::env::remove_var("DB_PATH"); }
+        let path = std::env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string());
+        assert_eq!(path, "trades.db");
+    }
+
+    #[test]
+    fn test_db_path_can_be_customized() {
+        unsafe { std::env::set_var("DB_PATH", "/custom/path/mydb.sqlite"); }
+        let path = std::env::var("DB_PATH").unwrap_or_else(|_| "trades.db".to_string());
+        assert_eq!(path, "/custom/path/mydb.sqlite");
+        unsafe { std::env::remove_var("DB_PATH"); }
+    }
+
+    #[test]
+    fn test_config_has_db_fields() {
+        use crate::config::traders::TradersConfig;
+
+        // This test will fail until we add db_enabled and db_path to Config struct
+        unsafe {
+            std::env::set_var("DB_ENABLED", "false");
+            std::env::set_var("DB_PATH", "/test/path.db");
+        }
+
+        // Note: We can't actually call Config::from_env() in tests because it requires
+        // many other env vars (PRIVATE_KEY, etc.). Instead, we verify the fields exist
+        // by attempting to construct a Config with them.
+
+        // This will cause a compile error until the fields are added
+        let _test_config = Config {
+            private_key: "test".to_string(),
+            funder_address: None,
+            wss_url: "test".to_string(),
+            enable_trading: true,
+            mock_trading: false,
+            cb_large_trade_shares: 1500.0,
+            cb_consecutive_trigger: 2,
+            cb_sequence_window_secs: 30,
+            cb_min_depth_usd: 200.0,
+            cb_trip_duration_secs: 120,
+            db_enabled: false,
+            db_path: "/test/path.db".to_string(),
+            traders: TradersConfig::new(vec![]),
+            agg_enabled: false,
+            agg_window_ms: 800,
+            agg_bypass_shares: 4000.0,
+            api_enabled: false,
+            api_port: 8080,
+        };
+
+        unsafe {
+            std::env::remove_var("DB_ENABLED");
+            std::env::remove_var("DB_PATH");
+        }
+    }
+
+    #[test]
+    fn test_config_has_traders_field() {
+        use crate::config::traders::TradersConfig;
+
+        // Verify Config struct has traders field
+        let traders = TradersConfig::new(vec![]);
+        let _test_config = Config {
+            private_key: "test".to_string(),
+            funder_address: None,
+            wss_url: "test".to_string(),
+            enable_trading: true,
+            mock_trading: false,
+            cb_large_trade_shares: 1500.0,
+            cb_consecutive_trigger: 2,
+            cb_sequence_window_secs: 30,
+            cb_min_depth_usd: 200.0,
+            cb_trip_duration_secs: 120,
+            db_enabled: false,
+            db_path: "/test/path.db".to_string(),
+            traders,
+            agg_enabled: false,
+            agg_window_ms: 800,
+            agg_bypass_shares: 4000.0,
+            api_enabled: false,
+            api_port: 8080,
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Aggregation Configuration Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_aggregation_config_defaults() {
+        // AGG_ENABLED defaults to false
+        unsafe { std::env::remove_var("AGG_ENABLED"); }
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(!enabled, "AGG_ENABLED should default to false");
+
+        // AGG_WINDOW_MS defaults to 800
+        unsafe { std::env::remove_var("AGG_WINDOW_MS"); }
+        let window_ms: u64 = env_parse("AGG_WINDOW_MS", 800);
+        assert_eq!(window_ms, 800, "AGG_WINDOW_MS should default to 800");
+
+        // AGG_BYPASS_SHARES defaults to 4000.0
+        unsafe { std::env::remove_var("AGG_BYPASS_SHARES"); }
+        let bypass: f64 = env_parse("AGG_BYPASS_SHARES", 4000.0);
+        assert_eq!(bypass, 4000.0, "AGG_BYPASS_SHARES should default to 4000.0");
+    }
+
+    #[test]
+    fn test_aggregation_config_enabled_true() {
+        unsafe { std::env::set_var("AGG_ENABLED", "true"); }
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(enabled, "AGG_ENABLED=true should enable aggregation");
+        unsafe { std::env::remove_var("AGG_ENABLED"); }
+    }
+
+    #[test]
+    fn test_aggregation_config_enabled_1() {
+        unsafe { std::env::set_var("AGG_ENABLED", "1"); }
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(enabled, "AGG_ENABLED=1 should enable aggregation");
+        unsafe { std::env::remove_var("AGG_ENABLED"); }
+    }
+
+    #[test]
+    fn test_aggregation_config_custom_window() {
+        unsafe { std::env::set_var("AGG_WINDOW_MS", "1000"); }
+        let window_ms: u64 = env_parse("AGG_WINDOW_MS", 800);
+        assert_eq!(window_ms, 1000, "AGG_WINDOW_MS=1000 should set window to 1000ms");
+        unsafe { std::env::remove_var("AGG_WINDOW_MS"); }
+    }
+
+    #[test]
+    fn test_aggregation_config_custom_bypass() {
+        unsafe { std::env::set_var("AGG_BYPASS_SHARES", "5000.0"); }
+        let bypass: f64 = env_parse("AGG_BYPASS_SHARES", 4000.0);
+        assert_eq!(bypass, 5000.0, "AGG_BYPASS_SHARES=5000.0 should set bypass to 5000.0");
+        unsafe { std::env::remove_var("AGG_BYPASS_SHARES"); }
+    }
+
+    #[test]
+    fn test_config_has_aggregation_fields() {
+        use crate::config::traders::TradersConfig;
+
+        // This test will fail until we add aggregation fields to Config struct
+        let traders = TradersConfig::new(vec![]);
+        let _test_config = Config {
+            private_key: "test".to_string(),
+            funder_address: None,
+            wss_url: "test".to_string(),
+            enable_trading: true,
+            mock_trading: false,
+            cb_large_trade_shares: 1500.0,
+            cb_consecutive_trigger: 2,
+            cb_sequence_window_secs: 30,
+            cb_min_depth_usd: 200.0,
+            cb_trip_duration_secs: 120,
+            db_enabled: false,
+            db_path: "/test/path.db".to_string(),
+            traders,
+            agg_enabled: false,
+            agg_window_ms: 800,
+            agg_bypass_shares: 4000.0,
+            api_enabled: false,
+            api_port: 8080,
+        };
+    }
+
+    #[test]
+    fn test_aggregation_disabled_by_default() {
+        // Clear env vars to test defaults
+        unsafe {
+            std::env::remove_var("AGG_ENABLED");
+            std::env::remove_var("AGG_WINDOW_MS");
+            std::env::remove_var("AGG_BYPASS_SHARES");
+        }
+
+        // Verify default behavior: aggregation disabled
+        let enabled: bool = env_parse_bool("AGG_ENABLED", false);
+        assert!(!enabled, "Aggregation should be disabled by default");
+    }
+
+    // -------------------------------------------------------------------------
+    // API Configuration Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_api_config_defaults() {
+        // Test that default values work correctly
+        // Don't rely on env var state - just test the logic directly
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_DEFAULT_NONEXISTENT", false);
+        assert!(!enabled, "API_ENABLED should default to false when not set");
+
+        let port: u16 = env_parse("API_PORT_TEST_DEFAULT_NONEXISTENT", 8080);
+        assert_eq!(port, 8080, "API_PORT should default to 8080 when not set");
+    }
+
+    #[test]
+    fn test_api_config_enabled_true() {
+        // Test true parsing
+        unsafe { std::env::set_var("API_ENABLED_TEST_TRUE", "true"); }
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_TRUE", false);
+        assert!(enabled, "API_ENABLED=true should enable API");
+        unsafe { std::env::remove_var("API_ENABLED_TEST_TRUE"); }
+    }
+
+    #[test]
+    fn test_api_config_enabled_1() {
+        unsafe { std::env::set_var("API_ENABLED_TEST_ONE", "1"); }
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_ONE", false);
+        assert!(enabled, "API_ENABLED=1 should enable API");
+        unsafe { std::env::remove_var("API_ENABLED_TEST_ONE"); }
+    }
+
+    #[test]
+    fn test_api_config_custom_port() {
+        unsafe {
+            std::env::set_var("API_PORT_TEST_CUSTOM", "9090");
+        }
+        let port: u16 = env_parse("API_PORT_TEST_CUSTOM", 8080);
+        assert_eq!(port, 9090, "API_PORT=9090 should set port to 9090");
+        unsafe { std::env::remove_var("API_PORT_TEST_CUSTOM"); }
+    }
+
+    #[test]
+    fn test_api_disabled_by_default() {
+        // Verify default behavior when env var doesn't exist
+        let enabled: bool = env_parse_bool("API_ENABLED_TEST_DISABLED_NONEXISTENT", false);
+        assert!(!enabled, "API should be disabled by default when env var not set");
     }
 }

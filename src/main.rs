@@ -16,7 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 mod models;
@@ -26,6 +26,11 @@ use pm_whale_follower::settings::*;
 use pm_whale_follower::market_cache;
 use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
+use pm_whale_follower::persistence::{TradeStore, TradeRecord};
+use pm_whale_follower::config::traders::TradersConfig;
+use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
+use pm_whale_follower::aggregator::{TradeAggregator, AggregationConfig};
+use pm_whale_follower::api::{ApiConfig, start_api_server};
 use models::*;
 use std::sync::Arc;
 
@@ -88,7 +93,70 @@ async fn main() -> Result<()> {
     let _cache_refresh_handle = market_cache::spawn_cache_refresh_task();
 
     let cfg = Config::from_env()?;
-    
+
+    // Initialize trader state manager
+    let trader_manager = Arc::new(Mutex::new(TraderManager::new(&cfg.traders)));
+    println!("Trader state manager initialized for {} traders", cfg.traders.len());
+
+    // Initialize trade aggregator (if enabled)
+    let aggregator = if cfg.agg_enabled {
+        let agg_config = AggregationConfig {
+            window_duration: Duration::from_millis(cfg.agg_window_ms),
+            min_trades: 2,
+            max_pending_usd: 500.0,
+            bypass_threshold: cfg.agg_bypass_shares,
+        };
+        let agg = Arc::new(Mutex::new(TradeAggregator::new(agg_config)));
+        println!(
+            "Trade aggregation enabled: {}ms window, bypass threshold: {} shares",
+            cfg.agg_window_ms, cfg.agg_bypass_shares
+        );
+        Some(agg)
+    } else {
+        println!("Trade aggregation disabled");
+        None
+    };
+
+    // Initialize trade persistence channel (if enabled)
+    // Uses a dedicated background thread to handle SQLite operations
+    let (trade_tx, stats_persist_path) = if cfg.db_enabled {
+        let db_path = cfg.db_path.clone();
+        let (tx, rx) = mpsc::unbounded_channel::<TradeRecord>();
+
+        // Spawn a background thread for persistence (SQLite is not Send)
+        std::thread::spawn(move || {
+            persistence_worker(rx, &db_path);
+        });
+
+        println!("Trade persistence enabled: {}", cfg.db_path);
+        (Some(tx), Some(cfg.db_path.clone()))
+    } else {
+        println!("Trade persistence disabled");
+        (None, None)
+    };
+
+    // Start HTTP API server (if enabled)
+    if cfg.api_enabled {
+        let api_config = ApiConfig {
+            enabled: cfg.api_enabled,
+            port: cfg.api_port,
+        };
+        let api_db_path = stats_persist_path.clone();
+
+        match start_api_server(api_config, api_db_path).await {
+            Ok(_handle) => {
+                println!("HTTP API server started on http://127.0.0.1:{}", cfg.api_port);
+                println!("  - GET /health - Health check");
+                println!("  - GET /positions - Current positions");
+                println!("  - GET /trades?limit=N&since=TS - Trade history");
+                println!("  - GET /stats - Aggregation statistics");
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to start API server: {}", e);
+            }
+        }
+    }
+
     let (client, creds) = build_worker_state(
         cfg.private_key.clone(),
         cfg.funder_address.clone(),
@@ -120,8 +188,73 @@ async fn main() -> Result<()> {
         cfg.enable_trading, cfg.mock_trading
     );
 
+    // Spawn background flush task for aggregator (if enabled)
+    if let Some(ref agg) = aggregator {
+        let agg_clone = Arc::clone(agg);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+
+                // Flush expired aggregation windows
+                let expired = {
+                    let mut agg_lock = agg_clone.lock().await;
+                    agg_lock.flush_expired()
+                };
+
+                // Execute each aggregated trade
+                for aggregated in expired {
+                    let count = aggregated.trade_count;
+                    println!(
+                        "[AGG] Window flush: {} trades combined into 1 order ({:.2} shares @ {:.4} avg)",
+                        count, aggregated.total_shares, aggregated.avg_price
+                    );
+
+                    // TODO: Execute aggregated trade through order engine
+                    // This will be implemented in Phase 3, Step 3.3
+                    // For now, just log that we would execute it
+                }
+            }
+        });
+    }
+
+    // Spawn signal handler for graceful shutdown
+    // Note: When the channel is dropped, the persistence worker will flush and exit
+    let aggregator_shutdown = aggregator.clone();
+    tokio::spawn(async move {
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            println!("\nReceived shutdown signal, shutting down...");
+
+            // Flush any pending aggregations before shutdown
+            if let Some(agg) = aggregator_shutdown {
+                let pending_aggregations = {
+                    let mut agg_lock = agg.lock().await;
+                    agg_lock.flush_all()
+                };
+
+                if !pending_aggregations.is_empty() {
+                    println!(
+                        "[AGG] Shutdown: flushing {} pending aggregations",
+                        pending_aggregations.len()
+                    );
+
+                    // TODO: Execute pending aggregations before exit (Phase 3, Step 3.3)
+                    // For now, just log what would be executed
+                    for aggregated in pending_aggregations {
+                        println!(
+                            "[AGG] Shutdown flush: {} trades -> {:.2} shares @ {:.4} avg",
+                            aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
+                        );
+                    }
+                }
+            }
+
+            std::process::exit(0);
+        }
+    });
+
     loop {
-        if let Err(e) = run_ws_loop(&cfg.wss_url, &order_engine).await {
+        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone(), Arc::clone(&trader_manager), stats_persist_path.clone(), aggregator.clone()).await {
             eprintln!("⚠️ WS error: {e}. Reconnecting...");
             tokio::time::sleep(WS_RECONNECT_DELAY).await;
         }
@@ -174,6 +307,39 @@ fn start_order_worker(
     std::thread::spawn(move || {
         let mut guard = RiskGuard::new(risk_config);
         order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx);
+    });
+}
+
+/// Background worker for trade persistence
+/// Runs on a dedicated thread to avoid Send/Sync issues with rusqlite
+fn persistence_worker(rx: mpsc::UnboundedReceiver<TradeRecord>, db_path: &str) {
+    // Create TradeStore on this thread (SQLite connection is not Send)
+    let store = match TradeStore::new(db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to initialize TradeStore in persistence worker: {}", e);
+            return;
+        }
+    };
+
+    // Create a runtime for the receiver
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime for persistence worker");
+
+    rt.block_on(async {
+        let mut rx = rx;
+        while let Some(record) = rx.recv().await {
+            store.record_trade(record);
+        }
+
+        // Channel closed - flush remaining trades
+        match store.flush() {
+            Ok(count) if count > 0 => println!("Flushed {} trades to database on shutdown", count),
+            Ok(_) => {}
+            Err(e) => eprintln!("Warning: Failed to flush trade store on shutdown: {}", e),
+        }
     });
 }
 
@@ -467,18 +633,51 @@ fn fetch_book_depth_blocking(
 // WebSocket Loop
 // ============================================================================
 
-async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
-    let (mut ws, _) = connect_async(wss_url).await?;
+/// Build WebSocket subscription message for monitoring trader events
+/// Returns JSON-RPC subscription message as string
+fn build_subscription_message(topic_filter: Vec<String>) -> String {
+    let topics_array: Value = if topic_filter.is_empty() {
+        // No filter - should not happen in practice
+        serde_json::json!([[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, Value::Null])
+    } else if topic_filter.len() > 10 {
+        // Too many traders - use null filter and do client-side filtering
+        serde_json::json!([[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, Value::Null])
+    } else {
+        // Normal case: filter by specific trader topics
+        serde_json::json!([[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, topic_filter])
+    };
 
-    let sub = serde_json::json!({
+    serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "eth_subscribe",
         "params": ["logs", {
             "address": MONITORED_ADDRESSES,
-            "topics": [[ORDERS_FILLED_EVENT_SIGNATURE], Value::Null, TARGET_TOPIC_HEX.as_str()]
+            "topics": topics_array
         }]
-    }).to_string();
+    }).to_string()
+}
 
-    println!("🔌 Connected. Subscribing...");
+async fn run_ws_loop(
+    cfg: &Config,
+    order_engine: &OrderEngine,
+    trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
+    trader_manager: Arc<Mutex<TraderManager>>,
+    stats_persist_path: Option<String>,
+    aggregator: Option<Arc<Mutex<TradeAggregator>>>,
+) -> Result<()> {
+    let (mut ws, _) = connect_async(&cfg.wss_url).await?;
+
+    // Build topic filter from traders config
+    let topic_filter = cfg.traders.build_topic_filter();
+    let sub = build_subscription_message(topic_filter.clone());
+
+    // Log trader monitoring info
+    let trader_count = cfg.traders.iter().filter(|t| t.enabled).count();
+    if topic_filter.len() > 10 {
+        println!("🔌 Connected. Subscribing to {} traders (client-side filtering)...", trader_count);
+    } else {
+        println!("🔌 Connected. Subscribing to {} trader(s)...", trader_count);
+    }
+
     ws.send(Message::Text(sub)).await?;
 
     let http_client = reqwest::Client::builder().no_proxy().build()?;
@@ -503,18 +702,24 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
                     }
                 }
 
-                if let Some(evt) = parse_event(text) {
+                if let Some(evt) = parse_event(text, Some(&cfg.traders)) {
                     let engine = order_engine.clone();
                     let client = http_client.clone();
-                    tokio::spawn(async move { handle_event(evt, &engine, &client).await });
+                    let tx = trade_tx.clone();
+                    let tm = Arc::clone(&trader_manager);
+                    let agg = aggregator.clone();
+                    tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm, agg).await });
                 }
             }
             Message::Binary(bin) => {
                 if let Ok(text) = String::from_utf8(bin) {
-                    if let Some(evt) = parse_event(text) {
+                    if let Some(evt) = parse_event(text, Some(&cfg.traders)) {
                         let engine = order_engine.clone();
                         let client = http_client.clone();
-                        tokio::spawn(async move { handle_event(evt, &engine, &client).await });
+                        let tx = trade_tx.clone();
+                        let tm = Arc::clone(&trader_manager);
+                        let agg = aggregator.clone();
+                        tokio::spawn(async move { handle_event(evt, &engine, &client, tx, tm, agg).await });
                     }
                 }
             }
@@ -523,36 +728,117 @@ async fn run_ws_loop(wss_url: &str, order_engine: &OrderEngine) -> Result<()> {
             _ => {}
         }
 
-        // Periodic heartbeat to show bot is alive
+        // Periodic heartbeat to show bot is alive and check daily reset
         if last_heartbeat.elapsed() >= heartbeat_interval {
-            println!("💓 Heartbeat: listening for trades...");
+            // Check daily reset
+            {
+                let mut manager = trader_manager.lock().await;
+                manager.check_daily_reset();
+            }
+
+            // Log summary stats
+            let stats = {
+                let manager = trader_manager.lock().await;
+                manager.get_summary_stats()
+            };
+
+            println!(
+                "💓 Heartbeat: {} traders | {} trades today | {}/{}/{} (success/partial/failed) | ${:.2} total copied",
+                stats.total_traders,
+                stats.total_trades,
+                stats.total_successful,
+                stats.total_partial,
+                stats.total_failed,
+                stats.total_copied_usd
+            );
+
+            // Persist trader stats to database (if enabled)
+            if let Some(ref db_path) = stats_persist_path {
+                let db_path = db_path.clone();
+                let tm = Arc::clone(&trader_manager);
+                tokio::task::spawn_blocking(move || {
+                    if let Ok(store) = TradeStore::new(&db_path) {
+                        let manager = tokio::runtime::Handle::current().block_on(tm.lock());
+                        if let Err(e) = manager.persist_to_db(&store) {
+                            eprintln!("Warning: Failed to persist trader stats: {}", e);
+                        }
+                    }
+                });
+            }
+
             last_heartbeat = std::time::Instant::now();
         }
     }
 }
 
-async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client: &reqwest::Client) {
+async fn handle_event(
+    evt: ParsedEvent,
+    order_engine: &OrderEngine,
+    http_client: &reqwest::Client,
+    trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
+    trader_manager: Arc<Mutex<TraderManager>>,
+    aggregator: Option<Arc<Mutex<TradeAggregator>>>,
+) {
     // Check live status from cache, fallback to API lookup
     let is_live = match market_cache::get_is_live(&evt.order.clob_token_id) {
         Some(v) => Some(v),
         None => fetch_is_live(&evt.order.clob_token_id, http_client).await,
     };
 
-    let status = order_engine.submit(evt.clone(), is_live).await;
+    // Aggregation logic (if enabled)
+    let status = if let Some(agg) = aggregator {
+        let side = if evt.order.order_type.starts_with("BUY") { "BUY" } else { "SELL" };
+        let shares = evt.order.shares;
+        let price = evt.order.price_per_share;
+        let token_id = evt.order.clob_token_id.to_string();
+        let trader = evt.trader_address.clone();
+
+        // Add trade to aggregator and check if we should execute immediately
+        let aggregation_result = {
+            let mut agg_lock = agg.lock().await;
+            agg_lock.add_trade(token_id.clone(), side.to_string(), shares, price, trader)
+        };
+
+        match aggregation_result {
+            Some(aggregated) => {
+                // Execute aggregated trade immediately (bypass or threshold reached)
+                if aggregated.trade_count == 1 {
+                    // Bypass: large trade executed immediately
+                    println!("[AGG] Bypass: {:.2} shares executed immediately", aggregated.total_shares);
+                } else {
+                    // Aggregated: multiple trades combined
+                    println!(
+                        "[AGG] Aggregated: {} trades -> {:.2} shares @ {:.4} avg",
+                        aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
+                    );
+                }
+                // TODO: Execute the aggregated trade (Phase 3, Step 3.3)
+                order_engine.submit(evt.clone(), is_live).await
+            }
+            None => {
+                // Trade added to pending window
+                println!("[AGG] Pending: trade added to aggregation window");
+                "AGG_PENDING".to_string()
+            }
+        }
+    } else {
+        // Aggregation disabled - execute immediately
+        order_engine.submit(evt.clone(), is_live).await
+    };
 
     tokio::time::sleep(Duration::from_secs_f32(2.8)).await;
 
     // Fetch order book for post-trade logging
     let bests = fetch_best_book(&evt.order.clob_token_id, &evt.order.order_type, http_client).await;
     let ((bp, bs), (sp, ss)) = bests.unwrap_or_else(|| (("N/A".into(), "N/A".into()), ("N/A".into(), "N/A".into())));
-    let is_live = is_live.unwrap_or(false);
+    let is_live_bool = is_live.unwrap_or(false);
 
     // Highlight best price in bright pink
     let pink = "\x1b[38;5;199m";
     let reset = "\x1b[0m";
     let colored_bp = format!("{}{}{}", pink, bp, reset);
 
-    let live_display = if is_live {
+    let live_display = if is_live_bool {
         format!("\x1b[34mlive: true\x1b[0m")
     } else {
         "live: false".to_string()
@@ -577,6 +863,61 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
         evt.block_number, tennis_display, soccer_display, evt.order.order_type, evt.order.usd_value, status, colored_bp, bs, sp, ss, live_display
     );
 
+    // Parse status to determine trade outcome and record in trader manager
+    let (our_shares_opt, our_price_opt, our_usd_opt, fill_pct_opt, trade_status_str) = parse_status_for_db(&status);
+
+    // Determine TradeStatus enum from status string
+    let trade_status = if trade_status_str == "SUCCESS" {
+        // Check fill percentage to distinguish full success from partial
+        if let Some(fill_pct) = fill_pct_opt {
+            if fill_pct >= 90.0 {
+                TradeStatus::Success
+            } else {
+                TradeStatus::Partial
+            }
+        } else {
+            TradeStatus::Success
+        }
+    } else if trade_status_str.starts_with("SKIPPED") {
+        TradeStatus::Skipped
+    } else {
+        TradeStatus::Failed
+    };
+
+    // Record trade in trader manager (with USD amount from our execution)
+    let usd_amount = our_usd_opt.unwrap_or(0.0);
+    {
+        let mut manager = trader_manager.lock().await;
+        manager.record_trade(&evt.trader_address, usd_amount, trade_status);
+    }
+
+    // Record trade to database if persistence is enabled
+    if let Some(tx) = trade_tx {
+        let record = TradeRecord {
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            block_number: evt.block_number,
+            tx_hash: evt.tx_hash.clone(),
+            trader_address: evt.trader_address.clone(),
+            token_id: evt.order.clob_token_id.to_string(),
+            side: if evt.order.order_type.starts_with("BUY") { "BUY".to_string() } else { "SELL".to_string() },
+            whale_shares: evt.order.shares,
+            whale_price: evt.order.price_per_share,
+            whale_usd: evt.order.usd_value,
+            our_shares: our_shares_opt,
+            our_price: our_price_opt,
+            our_usd: our_usd_opt,
+            fill_pct: fill_pct_opt,
+            status: trade_status_str,
+            latency_ms: None, // Could be added with timing instrumentation
+            is_live,
+            aggregation_count: None, // TODO: Set from aggregator when Phase 3 Step 3.2 integration complete
+            aggregation_window_ms: None, // TODO: Set from aggregator when Phase 3 Step 3.2 integration complete
+        };
+
+        // Send to persistence worker (non-blocking)
+        let _ = tx.send(record);
+    }
+
     let ts: DateTime<Utc> = Utc::now();
     let row = CSV_BUF.with(|buf| {
         SANITIZE_BUF.with(|sbuf| {
@@ -589,12 +930,102 @@ async fn handle_event(evt: ParsedEvent, order_engine: &OrderEngine, http_client:
                 ts.format("%Y-%m-%d %H:%M:%S%.3f"),
                 evt.block_number, evt.order.clob_token_id, evt.order.usd_value,
                 evt.order.shares, evt.order.price_per_share, evt.order.order_type,
-                sb, bp, bs, sp, ss, evt.tx_hash, is_live
+                sb, bp, bs, sp, ss, evt.tx_hash, is_live_bool
             );
             b.clone()
         })
     });
     let _ = tokio::task::spawn_blocking(move || append_csv_row(row)).await;
+}
+
+/// Parse the status string to extract execution details for database storage
+/// Returns (our_shares, our_price, our_usd, fill_pct, status_category)
+fn parse_status_for_db(status: &str) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, String) {
+    // Status contains ANSI color codes - strip them for parsing
+    let clean_status = strip_ansi_codes(status);
+
+    // Try to parse "200 OK" successful trades: "200 OK [type] | filled/requested filled @ price | whale ..."
+    if clean_status.starts_with("200 OK") {
+        // Pattern: "200 OK [SCALED] | 5.00/5.00 filled @ 0.45 | whale 500.0 @ 0.44"
+        if let Some((filled, requested, price)) = parse_fill_details(&clean_status) {
+            let fill_pct = if requested > 0.0 { (filled / requested) * 100.0 } else { 0.0 };
+            let our_usd = filled * price;
+            return (Some(filled), Some(price), Some(our_usd), Some(fill_pct), "SUCCESS".to_string());
+        }
+        return (None, None, None, None, "SUCCESS".to_string());
+    }
+
+    // Check for various failure/skip statuses
+    if clean_status.starts_with("SKIPPED") {
+        return (None, None, None, None, clean_status.split_whitespace().next().unwrap_or("SKIPPED").to_string());
+    }
+    if clean_status.starts_with("RISK_BLOCKED") {
+        return (None, None, None, None, "RISK_BLOCKED".to_string());
+    }
+    if clean_status.starts_with("EXEC_FAIL") || clean_status.starts_with("FAILED") {
+        return (None, None, None, None, "FAILED".to_string());
+    }
+    if clean_status.starts_with("MOCK") {
+        return (None, None, None, None, "MOCK".to_string());
+    }
+    if clean_status.contains("QUEUE_ERR") || clean_status.contains("WORKER") {
+        return (None, None, None, None, "ERROR".to_string());
+    }
+
+    // Default: unknown status
+    (None, None, None, None, clean_status.chars().take(20).collect())
+}
+
+/// Strip ANSI escape codes from a string
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if c == 'm' {
+                in_escape = false;
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Parse fill details from status string
+/// Returns (filled_shares, requested_shares, price)
+fn parse_fill_details(status: &str) -> Option<(f64, f64, f64)> {
+    // Pattern: "... | 5.00/5.00 filled @ 0.45 | ..."
+    // Find the fill segment
+    let parts: Vec<&str> = status.split('|').collect();
+    for part in parts {
+        let trimmed = part.trim();
+        // Look for "X.XX/Y.YY filled @ Z.ZZ"
+        if trimmed.contains("filled @") {
+            // Split on "filled @"
+            let fill_parts: Vec<&str> = trimmed.split("filled @").collect();
+            if fill_parts.len() == 2 {
+                // First part has "X.XX/Y.YY", second has "Z.ZZ"
+                let ratio_part = fill_parts[0].trim();
+                let price_str = fill_parts[1].trim();
+
+                // Parse ratio: "5.00/5.00" or just the numbers
+                if let Some(slash_idx) = ratio_part.rfind('/') {
+                    let filled_str = ratio_part[..slash_idx].split_whitespace().last()?;
+                    let requested_str = &ratio_part[slash_idx + 1..];
+
+                    let filled: f64 = filled_str.parse().ok()?;
+                    let requested: f64 = requested_str.parse().ok()?;
+                    let price: f64 = price_str.split_whitespace().next()?.parse().ok()?;
+
+                    return Some((filled, requested, price));
+                }
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -1013,17 +1444,37 @@ async fn fetch_best_book(token_id: &str, order_type: &str, client: &reqwest::Cli
 // Event Parsing
 // ============================================================================
 
-fn parse_event(message: String) -> Option<ParsedEvent> {
+fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<ParsedEvent> {
     let msg: WsMessage = serde_json::from_str(&message).ok()?;
     let result = msg.params?.result?;
-    
-    // just to double check! 
+
+    // just to double check!
     if result.topics.len() < 3 { return None; }
-    
-    let has_target = result.topics.get(2)
-        .map(|t| t.eq_ignore_ascii_case(TARGET_TOPIC_HEX.as_str()))
-        .unwrap_or(false);
-    if !has_target { return None; }
+
+    // Extract trader address from topics[2]
+    // Format: 0x000000000000000000000000{40-char-address}
+    let trader_topic = result.topics.get(2)?;
+    let trader_address = extract_address_from_topic(trader_topic)?;
+
+    // Look up trader in config (if provided)
+    let trader_label = if let Some(traders_cfg) = traders {
+        // Try to find trader by topic hex
+        if let Some(trader_cfg) = traders_cfg.get_by_topic(trader_topic) {
+            if !trader_cfg.enabled {
+                return None; // Skip disabled traders
+            }
+            trader_cfg.label.clone()
+        } else {
+            // Trader not in our config - skip
+            return None;
+        }
+    } else {
+        // No traders config provided (legacy mode or tests)
+        // Fall back to checking TARGET_TOPIC_HEX
+        let has_target = trader_topic.eq_ignore_ascii_case(TARGET_TOPIC_HEX.as_str());
+        if !has_target { return None; }
+        String::new()
+    };
 
     let hex_data = &result.data;
     if hex_data.len() < 2 + 64 * 4 { return None; }
@@ -1060,6 +1511,8 @@ fn parse_event(message: String) -> Option<ParsedEvent> {
             .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
             .unwrap_or_default(),
         tx_hash: result.transaction_hash.unwrap_or_default(),
+        trader_address,
+        trader_label,
         order: OrderInfo {
             order_type,
             clob_token_id: u256_to_dec_cached(&token_bytes, &clob_id),
@@ -1068,6 +1521,19 @@ fn parse_event(message: String) -> Option<ParsedEvent> {
             price_per_share: price,
         },
     })
+}
+
+/// Extract 40-character address from a topic hex string
+/// Format: 0x000000000000000000000000{40-char-address}
+/// Returns normalized lowercase address without 0x prefix
+fn extract_address_from_topic(topic: &str) -> Option<String> {
+    let topic_clean = topic.trim().strip_prefix("0x").unwrap_or(topic.trim());
+    if topic_clean.len() != 64 {
+        return None;
+    }
+    // Last 40 characters are the address (first 24 are padding zeros)
+    let address = &topic_clean[24..64];
+    Some(address.to_lowercase())
 }
 
 // ============================================================================
@@ -1167,5 +1633,198 @@ fn sanitize_csv(value: &str, out: &mut String) {
     out.reserve(value.len());
     for &b in value.as_bytes() {
         out.push(match b { b',' => ';', b'\n' | b'\r' => ' ', _ => b as char });
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test extracting trader address from topics[2]
+    /// Topics[2] format: 0x000000000000000000000000{40-char-address}
+    #[test]
+    fn test_extract_trader_address_from_topic() {
+        // Ensure env var is set (for legacy TARGET_TOPIC_HEX fallback)
+        unsafe {
+            std::env::set_var("TARGET_WHALE_ADDRESS", "def456def456789012345678901234567890def4");
+        }
+
+        // Use a consistent test address
+        let trader_addr = "def456def456789012345678901234567890def4";
+        let topic_hex = format!("0x000000000000000000000000{}", trader_addr);
+
+        let message = serde_json::json!({
+            "params": {
+                "result": {
+                    "topics": [
+                        ORDERS_FILLED_EVENT_SIGNATURE,
+                        "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        topic_hex
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456000000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000000007a120",
+                    "blockNumber": "0x1234",
+                    "transactionHash": "0xabcdef"
+                }
+            }
+        }).to_string();
+
+        let event = parse_event(message, None);
+        assert!(event.is_some());
+        let event = event.unwrap();
+
+        // Trader address should be extracted and normalized (lowercase, no 0x)
+        assert_eq!(event.trader_address, trader_addr);
+    }
+
+    /// Test that trader address is normalized to lowercase
+    #[test]
+    fn test_trader_address_normalized_to_lowercase() {
+        // Ensure env var is set (for legacy TARGET_TOPIC_HEX fallback)
+        unsafe {
+            std::env::set_var("TARGET_WHALE_ADDRESS", "def456def456789012345678901234567890def4");
+        }
+
+        // Use same test address but uppercase
+        let trader_addr_upper = "DEF456DEF456789012345678901234567890DEF4";
+        let topic_hex = format!("0x000000000000000000000000{}", trader_addr_upper);
+
+        let message = serde_json::json!({
+            "params": {
+                "result": {
+                    "topics": [
+                        ORDERS_FILLED_EVENT_SIGNATURE,
+                        "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        topic_hex
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456000000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000000007a120",
+                    "blockNumber": "0x1234",
+                    "transactionHash": "0xabcdef"
+                }
+            }
+        }).to_string();
+
+        let event = parse_event(message, None);
+        assert!(event.is_some());
+        let event = event.unwrap();
+
+        // Should be normalized to lowercase
+        assert_eq!(event.trader_address, trader_addr_upper.to_lowercase());
+    }
+
+    /// Test that trader_label is empty (will be populated in later increment)
+    #[test]
+    fn test_trader_label_initially_empty() {
+        // Ensure env var is set (for legacy TARGET_TOPIC_HEX fallback)
+        unsafe {
+            std::env::set_var("TARGET_WHALE_ADDRESS", "def456def456789012345678901234567890def4");
+        }
+
+        let trader_addr = "def456def456789012345678901234567890def4";
+        let topic_hex = format!("0x000000000000000000000000{}", trader_addr);
+
+        let message = serde_json::json!({
+            "params": {
+                "result": {
+                    "topics": [
+                        ORDERS_FILLED_EVENT_SIGNATURE,
+                        "0x0000000000000000000000000000000000000000000000000000000000000000",
+                        topic_hex
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456000000000000000000000000000000000000000000000000000000000000f4240000000000000000000000000000000000000000000000000000000000007a120",
+                    "blockNumber": "0x1234",
+                    "transactionHash": "0xabcdef"
+                }
+            }
+        }).to_string();
+
+        let event = parse_event(message, None);
+        assert!(event.is_some());
+        let event = event.unwrap();
+
+        // Label should be empty for now
+        assert_eq!(event.trader_label, "");
+    }
+
+    // Test extract_address_from_topic helper function
+    #[test]
+    fn test_extract_address_from_topic_valid() {
+        let topic = "0x000000000000000000000000abc123def456789012345678901234567890abcd";
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, Some("abc123def456789012345678901234567890abcd".to_string()));
+    }
+
+    #[test]
+    fn test_extract_address_from_topic_uppercase() {
+        let topic = "0x000000000000000000000000ABC123DEF456789012345678901234567890ABCD";
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, Some("abc123def456789012345678901234567890abcd".to_string()));
+    }
+
+    #[test]
+    fn test_extract_address_from_topic_no_prefix() {
+        let topic = "000000000000000000000000def456def456789012345678901234567890def4";
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, Some("def456def456789012345678901234567890def4".to_string()));
+    }
+
+    #[test]
+    fn test_extract_address_from_topic_invalid_length() {
+        let topic = "0x0000000000000000000000abc123";  // Too short
+        let result = extract_address_from_topic(topic);
+        assert_eq!(result, None);
+    }
+
+    // Test subscription message building
+    #[test]
+    fn test_build_subscription_message_single_topic() {
+        let topics = vec![
+            "0x000000000000000000000000abc123def456789012345678901234567890abcd".to_string()
+        ];
+
+        let msg = build_subscription_message(topics);
+        let parsed: Value = serde_json::from_str(&msg).unwrap();
+
+        // Verify structure
+        assert_eq!(parsed["method"], "eth_subscribe");
+        assert_eq!(parsed["params"][0], "logs");
+
+        // Verify topics array has trader filter
+        let topics_array = &parsed["params"][1]["topics"];
+        assert!(topics_array.is_array());
+        assert_eq!(topics_array[2][0], "0x000000000000000000000000abc123def456789012345678901234567890abcd");
+    }
+
+    #[test]
+    fn test_build_subscription_message_multiple_topics() {
+        let topics = vec![
+            "0x000000000000000000000000abc123def456789012345678901234567890abcd".to_string(),
+            "0x000000000000000000000000def456def456789012345678901234567890def4".to_string(),
+        ];
+
+        let msg = build_subscription_message(topics);
+        let parsed: Value = serde_json::from_str(&msg).unwrap();
+
+        // Verify topics array has both traders
+        let topics_array = &parsed["params"][1]["topics"];
+        assert_eq!(topics_array[2].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_build_subscription_message_many_topics_uses_null_filter() {
+        // Create 15 topics (> 10 threshold)
+        let topics: Vec<String> = (0..15)
+            .map(|i| format!("0x{:064x}", i))
+            .collect();
+
+        let msg = build_subscription_message(topics);
+        let parsed: Value = serde_json::from_str(&msg).unwrap();
+
+        // Verify topics[2] is null (client-side filtering)
+        let topics_array = &parsed["params"][1]["topics"];
+        assert_eq!(topics_array[2], Value::Null);
     }
 }
