@@ -6,12 +6,16 @@ This document explains what the Polymarket Copy Trading Bot does and how it work
 
 1. [Overview](#1-overview)
 2. [Core Features](#2-core-features)
-3. [Trading Flow](#3-trading-flow-step-by-step)
-4. [Performance Characteristics](#4-performance-characteristics)
-5. [Limitations](#5-limitations)
-6. [Safety Features](#6-safety-features-summary)
-7. [Understanding Output](#7-understanding-the-output)
-8. [Next Steps](#8-next-steps)
+3. [Multi-Trader Monitoring](#3-multi-trader-monitoring)
+4. [Trade Aggregation](#4-trade-aggregation)
+5. [Persistence & Analytics](#5-persistence--analytics)
+6. [Live P&L Tracking](#6-live-pl-tracking)
+7. [Trading Flow](#7-trading-flow-step-by-step)
+8. [Performance Characteristics](#8-performance-characteristics)
+9. [Limitations](#9-limitations)
+10. [Safety Features](#10-safety-features-summary)
+11. [Understanding Output](#11-understanding-the-output)
+12. [Next Steps](#12-next-steps)
 
 ## 1. Overview
 
@@ -224,7 +228,240 @@ Protects you from copying trades in dangerous conditions:
 
 ---
 
-## 3. Trading Flow (Step-by-Step)
+## 3. Multi-Trader Monitoring
+
+### 3.1 Overview
+
+Monitor and copy trades from multiple whale addresses simultaneously instead of just one.
+
+**Benefits:**
+- Diversify across multiple successful traders
+- Different scaling ratios per trader
+- Per-trader statistics and comparison tools
+
+### 3.2 Configuration Methods
+
+**Method 1: Environment Variable**
+```bash
+TRADER_ADDRESSES=addr1,addr2,addr3
+```
+
+**Method 2: JSON Configuration File**
+```json
+// traders.json
+[
+  {
+    "address": "abc123...",
+    "label": "whale1",
+    "scale_percent": 2.0,
+    "min_shares": 10
+  },
+  {
+    "address": "def456...",
+    "label": "whale2",
+    "scale_percent": 1.5,
+    "min_shares": 20
+  }
+]
+```
+
+**Method 3: Legacy Single Address**
+```bash
+TARGET_WHALE_ADDRESS=abc123...  # Still works for backward compatibility
+```
+
+### 3.3 Per-Trader Features
+
+- **Custom Labels:** Identify traders by name in logs
+- **Individual Scaling:** Different position sizes per trader
+- **Threshold Overrides:** Custom minimum trade sizes
+- **Statistics Tracking:** Success rate, volume, fill rates per trader
+
+### 3.4 Comparison Tool
+
+```bash
+cargo run --bin trader_comparison
+```
+
+Output shows:
+- Copy rate (% of trades successfully copied)
+- Success rate per trader
+- Average fill rate
+- Total USD copied
+
+---
+
+## 4. Trade Aggregation
+
+### 4.1 Overview
+
+Combines multiple rapid small trades into single orders for efficiency.
+
+**Benefits:**
+- Reduced API calls and fees
+- Better execution for burst trading patterns
+- Configurable aggregation windows
+
+### 4.2 How It Works
+
+1. Small trades within a time window are collected
+2. Trades for the same token/side are combined
+3. Weighted average price is calculated
+4. Single aggregated order is executed
+
+**Example:**
+```
+Trade 1: BUY 50 shares @ $0.45
+Trade 2: BUY 30 shares @ $0.46  } Combined: BUY 100 shares @ $0.455 avg
+Trade 3: BUY 20 shares @ $0.45
+```
+
+### 4.3 Configuration
+
+```bash
+AGG_ENABLED=true       # Enable aggregation (default: false)
+AGG_WINDOW_MS=800      # Aggregation window in milliseconds
+AGG_BYPASS_SHARES=4000 # Large trades bypass aggregation
+```
+
+### 4.4 Bypass Logic
+
+Large trades (4000+ shares by default) execute immediately without waiting for aggregation, ensuring time-sensitive large orders aren't delayed.
+
+---
+
+## 5. Persistence & Analytics
+
+### 5.1 SQLite Database
+
+All trades are stored in `trades.db` for analysis and position tracking.
+
+**Schema includes:**
+- Trade details (token, side, price, shares)
+- Execution status and timestamps
+- Trader identification
+- Aggregation metadata
+- Transaction hashes
+
+### 5.2 Position Monitoring
+
+```bash
+cargo run --bin position_monitor
+```
+
+**Features:**
+- Current positions with net shares
+- Average entry prices
+- Trade counts per position
+- Real-time updates
+
+### 5.3 Trade History
+
+```bash
+cargo run --bin trade_history
+```
+
+**Filters:**
+- `--trader <label>` - Filter by trader
+- `--token <id>` - Filter by token
+- `--since <timestamp>` - Filter by time
+- `--status <status>` - Filter by execution status
+
+**Output formats:**
+- Table (default)
+- CSV (`--format csv`)
+- JSON (`--format json`)
+
+### 5.4 HTTP API
+
+When enabled (`API_ENABLED=true`), exposes data via HTTP:
+
+```bash
+curl http://127.0.0.1:8080/health     # Bot status
+curl http://127.0.0.1:8080/positions  # Current positions
+curl http://127.0.0.1:8080/trades     # Recent trades
+curl http://127.0.0.1:8080/stats      # Statistics
+```
+
+### 5.5 CSV Import
+
+Import historical trades from legacy CSV files:
+
+```bash
+cargo run --bin import_csv matches_optimized.csv --db trades.db
+```
+
+---
+
+## 6. Live P&L Tracking
+
+### 6.1 Overview
+
+Real-time profit and loss calculation using live market prices.
+
+### 6.2 Price Fetching
+
+- Fetches current bid/ask from Polymarket CLOB API
+- Caches prices with configurable TTL (default: 30 seconds)
+- Rate limiting to avoid API throttling
+- Graceful fallback to cached prices on errors
+
+### 6.3 P&L Calculation
+
+**Long Positions:**
+```
+Unrealized P&L = (bid_price - avg_entry_price) * shares
+```
+
+**Short Positions:**
+```
+Unrealized P&L = (avg_entry_price - ask_price) * abs(shares)
+```
+
+### 6.4 Portfolio Summary
+
+```bash
+cargo run --bin position_monitor
+```
+
+**Output includes:**
+- Total Portfolio Value
+- Total Cost Basis
+- Total Unrealized P&L
+- Daily P&L Change (since midnight UTC)
+- Per-position P&L breakdown
+
+### 6.5 Daily P&L Tracking
+
+- Automatically snapshots portfolio at start of each day (UTC)
+- Calculates change from daily starting point
+- Persisted to `.portfolio_snapshot.json`
+
+### 6.6 JSON Output
+
+```bash
+cargo run --bin position_monitor -- --json
+```
+
+Returns complete portfolio data in JSON format for automation and integration.
+
+**Example output:**
+```json
+{
+  "timestamp": "2026-01-21T10:30:00Z",
+  "portfolio_value": 1234.56,
+  "cost_basis": 1000.00,
+  "unrealized_pnl": 234.56,
+  "daily_pnl_change": 50.00,
+  "snapshot_date": "2026-01-21",
+  "position_count": 5,
+  "positions": [...]
+}
+```
+
+---
+
+## 7. Trading Flow (Step-by-Step)
 
 This is a simplified overview. For complete detailed logic, see [Strategy Guide](05_STRATEGY.md).
 
@@ -262,7 +499,7 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 
 ---
 
-## 4. Performance Characteristics
+## 8. Performance Characteristics
 
 **Latency:**
 - Event detection: <1 second (blockchain dependent)
@@ -282,26 +519,27 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 
 ---
 
-## 5. Limitations
+## 9. Limitations
 
 **What the bot does NOT do:**
 - ❌ Market analysis or prediction
 - ❌ Stop-loss or take-profit orders
-- ❌ Portfolio management
-- ❌ Position monitoring after fill
-- ❌ Exit strategy (you manage closing positions)
-- ❌ Multiple whale copying (one whale at a time)
+- ❌ Automatic exit strategies (you manage closing positions)
+- ❌ Automatic rebalancing
 
 **What you need to do manually:**
-- Monitor your positions
 - Close positions when appropriate
-- Manage your portfolio
 - Adjust risk parameters
 - Find good whales to copy
 
+**What the bot NOW supports:**
+- ✅ Position monitoring with live P&L (see Section 6)
+- ✅ Portfolio summary and daily tracking
+- ✅ Multiple whale copying (see Section 3)
+
 ---
 
-## 6. Safety Features Summary
+## 10. Safety Features Summary
 
 ✅ Scaled position sizes (2% default)  
 ✅ Circuit breakers for dangerous conditions  
@@ -314,7 +552,7 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 
 ---
 
-## 7. Understanding the Output
+## 11. Understanding the Output
 
 **Console Messages:**
 
@@ -339,7 +577,7 @@ All trades are logged with: timestamp, block, token_id, usd_value, shares, price
 
 ---
 
-## 8. Next Steps
+## 12. Next Steps
 
 - Read [Configuration Guide](03_CONFIGURATION.md) to adjust settings
 - Review [Trading Strategy Guide](05_STRATEGY.md) for detailed strategy logic

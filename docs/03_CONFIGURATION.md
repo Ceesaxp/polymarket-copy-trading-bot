@@ -6,11 +6,15 @@ Complete reference for all bot configuration options.
 
 1. [Required Settings](#1-required-settings)
 2. [Trading Settings](#2-trading-settings)
-3. [Risk Management Settings](#3-risk-management-settings-circuit-breaker)
-4. [Advanced Settings](#4-advanced-settings)
-5. [Configuration Examples](#5-configuration-examples)
-6. [Validation](#6-validation)
-7. [Troubleshooting Configuration](#7-troubleshooting-configuration)
+3. [Multi-Trader Settings](#3-multi-trader-settings)
+4. [Aggregation Settings](#4-aggregation-settings)
+5. [Persistence Settings](#5-persistence-settings)
+6. [API Settings](#6-api-settings)
+7. [Risk Management Settings](#7-risk-management-settings-circuit-breaker)
+8. [Advanced Settings](#8-advanced-settings)
+9. [Configuration Examples](#9-configuration-examples)
+10. [Validation](#10-validation)
+11. [Troubleshooting Configuration](#11-troubleshooting-configuration)
 
 ---
 
@@ -141,11 +145,155 @@ Simulates trades without actually executing them. Useful for testing.
 
 ---
 
-## 3. Risk Management Settings (Circuit Breaker)
+## 3. Multi-Trader Settings
+
+Monitor and copy trades from multiple whale addresses simultaneously.
+
+### 3.1 TRADER_ADDRESSES
+
+**Type:** String (comma-separated)
+**Default:** Falls back to `TARGET_WHALE_ADDRESS`
+**Example:** `addr1,addr2,addr3`
+
+List of trader addresses to monitor. Addresses should be 40 hex characters without `0x` prefix.
+
+**Alternative:** Use a JSON configuration file for more control.
+
+---
+
+### 3.2 traders.json (File Configuration)
+
+For advanced multi-trader configuration, create `traders.json`:
+
+```json
+[
+  {
+    "address": "204f72f35326db932158cba6adff0b9a1da95e14",
+    "label": "whale1",
+    "scale_percent": 2.0,
+    "min_shares": 10
+  },
+  {
+    "address": "abc123def456789012345678901234567890abcd",
+    "label": "whale2",
+    "scale_percent": 1.5,
+    "min_shares": 20
+  }
+]
+```
+
+**Fields:**
+- `address` (required): 40-char hex address
+- `label` (optional): Human-readable name for logs
+- `scale_percent` (optional): Position scaling override (default: 2%)
+- `min_shares` (optional): Minimum shares to copy (default: 10)
+
+**Priority:** `traders.json` > `TRADER_ADDRESSES` > `TARGET_WHALE_ADDRESS`
+
+---
+
+## 4. Aggregation Settings
+
+Combine multiple rapid small trades into single orders.
+
+### 4.1 AGG_ENABLED
+
+**Type:** Boolean
+**Default:** `false`
+**Values:** `true`, `false`, `1`, `0`
+
+Enable or disable trade aggregation.
+
+---
+
+### 4.2 AGG_WINDOW_MS
+
+**Type:** Integer
+**Default:** `800`
+**Unit:** Milliseconds
+
+Time window for aggregating trades. Trades within this window for the same token/side are combined.
+
+**Recommendation:**
+- `500-800` = Balanced (captures burst trades)
+- `1000+` = More aggressive aggregation (may delay execution)
+
+---
+
+### 4.3 AGG_BYPASS_SHARES
+
+**Type:** Float
+**Default:** `4000.0`
+**Unit:** Shares
+
+Trades above this size bypass aggregation and execute immediately.
+
+**Recommendation:** Keep at `4000` to ensure large time-sensitive trades aren't delayed.
+
+---
+
+## 5. Persistence Settings
+
+Configure trade storage and database options.
+
+### 5.1 DB_ENABLED
+
+**Type:** Boolean
+**Default:** `true`
+**Values:** `true`, `false`, `1`, `0`
+
+Enable SQLite database storage for trades.
+
+---
+
+### 5.2 DB_PATH
+
+**Type:** String
+**Default:** `trades.db`
+
+Path to the SQLite database file.
+
+**Example:** `DB_PATH=/path/to/my/trades.db`
+
+---
+
+## 6. API Settings
+
+Enable HTTP API for external data access.
+
+### 6.1 API_ENABLED
+
+**Type:** Boolean
+**Default:** `false`
+**Values:** `true`, `false`, `1`, `0`
+
+Enable the HTTP data export API.
+
+**Note:** API binds to `127.0.0.1` only for security.
+
+---
+
+### 6.2 API_PORT
+
+**Type:** Integer
+**Default:** `8080`
+**Range:** 1024-65535
+
+Port for the HTTP API server.
+
+**Endpoints (when enabled):**
+- `GET /health` - Bot status and uptime
+- `GET /positions` - Current positions
+- `GET /trades` - Recent trades (supports `?limit=N&since=TS`)
+- `GET /stats` - Aggregation and trading statistics
+
+---
+
+## 7. Risk Management Settings (Circuit Breaker)
 
 Circuit breakers protect you from copying trades in dangerous market conditions (low liquidity, manipulation, etc.).
 
-### 3.1 CB_LARGE_TRADE_SHARES
+### 7.1 CB_LARGE_TRADE_SHARES
 
 **Type:** Float  
 **Default:** `1500.0`  
@@ -157,7 +305,7 @@ Minimum trade size that triggers circuit breaker analysis. Trades below this siz
 
 ---
 
-### 3.2 CB_CONSECUTIVE_TRIGGER
+### 7.2 CB_CONSECUTIVE_TRIGGER
 
 **Type:** Integer  
 **Default:** `2`  
@@ -174,7 +322,7 @@ Number of consecutive large trades (within the time window) that trigger a circu
 
 ---
 
-### 3.3 CB_SEQUENCE_WINDOW_SECS
+### 7.3 CB_SEQUENCE_WINDOW_SECS
 
 **Type:** Integer  
 **Default:** `30`  
@@ -192,7 +340,7 @@ Time window to check for consecutive large trades.
 
 ---
 
-### 3.4 CB_MIN_DEPTH_USD
+### 7.4 CB_MIN_DEPTH_USD
 
 **Type:** Float  
 **Default:** `200.0`  
@@ -209,7 +357,7 @@ Minimum order book depth (liquidity) required beyond the whale's price. If depth
 
 ---
 
-### 3.5 CB_TRIP_DURATION_SECS
+### 7.5 CB_TRIP_DURATION_SECS
 
 **Type:** Integer  
 **Default:** `120`  
@@ -227,7 +375,7 @@ How long to block trades after circuit breaker trips.
 
 ---
 
-## 4. Advanced Settings
+## 8. Advanced Settings
 
 These are set in code but can be modified by editing `src/config.rs`. Only change if you understand what you're doing.
 
@@ -262,9 +410,9 @@ The bot uses different strategies based on trade size:
 
 ---
 
-## 5. Configuration Examples
+## 9. Configuration Examples
 
-### 5.1 Example 1: Beginner (Safe Testing)
+### 9.1 Example 1: Beginner (Safe Testing)
 
 ```env
 PRIVATE_KEY=your_key_here
@@ -284,7 +432,7 @@ CB_MIN_DEPTH_USD=200.0
 CB_TRIP_DURATION_SECS=120
 ```
 
-### 5.2 Example 2: Conservative Trading
+### 9.2 Example 2: Conservative Trading
 
 ```env
 PRIVATE_KEY=your_key_here
@@ -303,7 +451,7 @@ CB_MIN_DEPTH_USD=500.0            # Only liquid markets
 CB_TRIP_DURATION_SECS=300         # Wait 5 minutes after trip
 ```
 
-### 5.3 Example 3: Aggressive Trading
+### 9.3 Example 3: Aggressive Trading
 
 ```env
 PRIVATE_KEY=your_key_here
@@ -324,7 +472,7 @@ CB_TRIP_DURATION_SECS=60          # Quick recovery
 
 ---
 
-## 6. Validation
+## 10. Validation
 
 After editing your `.env`, validate it:
 
@@ -341,7 +489,7 @@ This checks:
 
 ---
 
-## 7. Troubleshooting Configuration
+## 11. Troubleshooting Configuration
 
 **Problem:** Bot won't start, says "missing required env var"
 - **Solution:** Check that all required fields in `.env` are filled (no "here" placeholders)
