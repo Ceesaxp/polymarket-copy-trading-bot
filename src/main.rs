@@ -670,12 +670,17 @@ async fn run_ws_loop(
     let topic_filter = cfg.traders.build_topic_filter();
     let sub = build_subscription_message(topic_filter.clone());
 
-    // Log trader monitoring info
+    // Log trader monitoring info with topic details for debugging
     let trader_count = cfg.traders.iter().filter(|t| t.enabled).count();
     if topic_filter.len() > 10 {
         println!("🔌 Connected. Subscribing to {} traders (client-side filtering)...", trader_count);
     } else {
         println!("🔌 Connected. Subscribing to {} trader(s)...", trader_count);
+    }
+
+    // Debug: Print topic filter being used
+    for (i, topic) in topic_filter.iter().enumerate() {
+        println!("   📍 Trader {}: {}", i + 1, topic);
     }
 
     ws.send(Message::Text(sub)).await?;
@@ -1458,13 +1463,20 @@ fn parse_event(message: String, traders: Option<&TradersConfig>) -> Option<Parse
 
     // Look up trader in config (if provided)
     let trader_label = if let Some(traders_cfg) = traders {
-        // Try to find trader by topic hex
-        if let Some(trader_cfg) = traders_cfg.get_by_topic(trader_topic) {
+        // Try to find trader by topic hex (case-insensitive for robustness)
+        // WebSocket may return different case than our stored topics
+        let topic_lower = trader_topic.to_lowercase();
+        if let Some(trader_cfg) = traders_cfg.get_by_topic(&topic_lower) {
             if !trader_cfg.enabled {
                 return None; // Skip disabled traders
             }
             trader_cfg.label.clone()
         } else {
+            // Debug: Log when we receive an event but don't match a trader
+            // This helps diagnose subscription/filtering issues
+            if std::env::var("DEBUG_EVENTS").is_ok() {
+                eprintln!("🔍 Event from unknown trader: {} (addr: {})", trader_topic, trader_address);
+            }
             // Trader not in our config - skip
             return None;
         }
