@@ -267,30 +267,45 @@ impl TradersConfig {
     }
 
     /// Loads trader configuration with fallback chain:
-    /// 1. Try TRADER_ADDRESSES (new multi-trader format)
-    /// 2. Fall back to TARGET_WHALE_ADDRESS (legacy single trader)
-    /// 3. Error if neither is set
+    /// 1. Try TRADER_ADDRESSES environment variable (new multi-trader format)
+    /// 2. Try TARGET_WHALE_ADDRESS environment variable (legacy single trader)
+    /// 3. Try traders.json file (if no env vars are set)
+    /// 4. Error if none of the above are available
     ///
     /// # Returns
     /// * `Ok(TradersConfig)` - Loaded configuration
     /// * `Err(String)` - Error if no valid configuration source found
     pub fn load() -> Result<Self, String> {
-        // Try new format first
-        if env::var("TRADER_ADDRESSES").is_ok() {
-            return Self::from_env();
+        // Priority 1: Try TRADER_ADDRESSES env var
+        if let Ok(addresses_str) = env::var("TRADER_ADDRESSES") {
+            if !addresses_str.trim().is_empty() {
+                return Self::from_env();
+            }
         }
 
-        // Fall back to legacy TARGET_WHALE_ADDRESS
+        // Priority 2: Try TARGET_WHALE_ADDRESS env var (legacy)
         if let Ok(legacy_address) = env::var("TARGET_WHALE_ADDRESS") {
-            let normalized = validate_and_normalize_address(&legacy_address)
-                .map_err(|e| format!("Invalid TARGET_WHALE_ADDRESS: {}", e))?;
+            if !legacy_address.trim().is_empty() {
+                let normalized = validate_and_normalize_address(&legacy_address)
+                    .map_err(|e| format!("Invalid TARGET_WHALE_ADDRESS: {}", e))?;
 
-            let config = TraderConfig::new(&normalized, "Legacy")?;
-            return Ok(Self::new(vec![config]));
+                let config = TraderConfig::new(&normalized, "Legacy")?;
+                return Ok(Self::new(vec![config]));
+            }
         }
 
+        // Priority 3: Try traders.json file (only if no env vars are set)
+        let json_path = Path::new("traders.json");
+        if json_path.exists() {
+            return Self::from_file(json_path);
+        }
+
+        // No configuration found
         Err(
-            "No trader configuration found. Set either TRADER_ADDRESSES or TARGET_WHALE_ADDRESS environment variable.".to_string()
+            "No trader configuration found. Either:\n\
+             1. Set TRADER_ADDRESSES environment variable (comma-separated addresses)\n\
+             2. Set TARGET_WHALE_ADDRESS environment variable (single address)\n\
+             3. Create a traders.json file with trader configurations".to_string()
         )
     }
 
