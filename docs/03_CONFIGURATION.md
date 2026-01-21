@@ -188,7 +188,10 @@ For advanced multi-trader configuration, create `traders.json`:
 - `scale_percent` (optional): Position scaling override (default: 2%)
 - `min_shares` (optional): Minimum shares to copy (default: 10)
 
-**Priority:** `traders.json` > `TRADER_ADDRESSES` > `TARGET_WHALE_ADDRESS`
+**Priority:** Environment variables take precedence over file configuration:
+1. `TRADER_ADDRESSES` (if set and non-empty)
+2. `TARGET_WHALE_ADDRESS` (if set and non-empty)
+3. `traders.json` file (if exists and no env vars are set)
 
 ---
 

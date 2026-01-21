@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_load_priority_file_over_env() {
-        // Verify that from_file works and would take priority
+        // Verify that from_file works correctly
         use std::io::Write;
         let mut file = tempfile::NamedTempFile::new().unwrap();
         let json = r#"[{"address": "abc123def456789012345678901234567890abcd", "label": "FromFile"}]"#;
@@ -504,6 +504,29 @@ mod tests {
             let result = TradersConfig::from_env();
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("TRADER_ADDRESSES"));
+        }
+    }
+
+    #[test]
+    fn test_load_ignores_empty_env_vars() {
+        unsafe {
+            // Set empty env vars - should be ignored and fall through to next source
+            std::env::set_var("TRADER_ADDRESSES", "");
+            std::env::set_var("TARGET_WHALE_ADDRESS", "   ");
+
+            let result = TradersConfig::load();
+            // Should fail with "no configuration found" since both are empty
+            // (unless traders.json exists in cwd)
+            if result.is_err() {
+                let err = result.unwrap_err();
+                assert!(
+                    err.contains("trader configuration") ||
+                    err.contains("traders.json")
+                );
+            }
+
+            std::env::remove_var("TRADER_ADDRESSES");
+            std::env::remove_var("TARGET_WHALE_ADDRESS");
         }
     }
 
