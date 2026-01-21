@@ -337,33 +337,40 @@ impl Config {
             );
         };
         
-        // Validate TARGET_WHALE_ADDRESS (used by TARGET_TOPIC_HEX lazy static)
-        let target_whale = env::var("TARGET_WHALE_ADDRESS")
-            .context("TARGET_WHALE_ADDRESS env var is required. Add it to your .env file.\n\
-                     Format: 40-character hex address (no 0x prefix)\n\
-                     This is the whale address you want to copy trades from.\n\
-                     Find whale addresses on Polymarket leaderboards")?;
-        
-        let whale_clean = target_whale.trim().strip_prefix("0x").unwrap_or(target_whale.trim());
-        if whale_clean.is_empty() || whale_clean == "target_whale_address_here" {
-            anyhow::bail!(
-                "TARGET_WHALE_ADDRESS is set but has placeholder value.\n\
-                Replace 'target_whale_address_here' with the actual whale address you want to copy.\n\
-                Find whale addresses on Polymarket leaderboards or from successful traders."
-            );
+        // Validate TARGET_WHALE_ADDRESS only if traders.json and TRADER_ADDRESSES are not available
+        // (legacy fallback mode). When traders.json or TRADER_ADDRESSES is used, TARGET_WHALE_ADDRESS is optional.
+        let has_traders_file = Path::new("traders.json").exists();
+        let has_trader_addresses_env = env::var("TRADER_ADDRESSES").is_ok();
+
+        if !has_traders_file && !has_trader_addresses_env {
+            // Legacy mode - require TARGET_WHALE_ADDRESS
+            let target_whale = env::var("TARGET_WHALE_ADDRESS")
+                .context("No trader configuration found.\n\
+                         Either create a traders.json file, set TRADER_ADDRESSES env var,\n\
+                         or set TARGET_WHALE_ADDRESS env var (legacy mode).\n\
+                         See docs for traders.json format.")?;
+
+            let whale_clean = target_whale.trim().strip_prefix("0x").unwrap_or(target_whale.trim());
+            if whale_clean.is_empty() || whale_clean == "target_whale_address_here" {
+                anyhow::bail!(
+                    "TARGET_WHALE_ADDRESS is set but has placeholder value.\n\
+                    Replace 'target_whale_address_here' with the actual whale address you want to copy.\n\
+                    Find whale addresses on Polymarket leaderboards or from successful traders."
+                );
+            }
+            if whale_clean.len() != 40 {
+                anyhow::bail!(
+                    "TARGET_WHALE_ADDRESS must be exactly 40 hex characters (found {}).\n\
+                    Remove '0x' prefix if present. Current value: {}",
+                    whale_clean.len(),
+                    if whale_clean.len() > 20 { format!("{}...", &whale_clean[..20]) } else { whale_clean.to_string() }
+                );
+            }
+            if !whale_clean.chars().all(|c| c.is_ascii_hexdigit()) {
+                anyhow::bail!("TARGET_WHALE_ADDRESS contains invalid characters. Must be hexadecimal (0-9, a-f, A-F).");
+            }
         }
-        if whale_clean.len() != 40 {
-            anyhow::bail!(
-                "TARGET_WHALE_ADDRESS must be exactly 40 hex characters (found {}).\n\
-                Remove '0x' prefix if present. Current value: {}",
-                whale_clean.len(),
-                if whale_clean.len() > 20 { format!("{}...", &whale_clean[..20]) } else { whale_clean.to_string() }
-            );
-        }
-        if !whale_clean.chars().all(|c| c.is_ascii_hexdigit()) {
-            anyhow::bail!("TARGET_WHALE_ADDRESS contains invalid characters. Must be hexadecimal (0-9, a-f, A-F).");
-        }
-        
+
         let enable_trading = env::var("ENABLE_TRADING")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(true);

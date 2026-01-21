@@ -440,11 +440,10 @@ impl RustClobClient {
             .as_ref()
             .map_or(true, |t| t.eq_ignore_ascii_case("FAK"));
 
-        let round_cfg = round_config(tick)?;
         let (side_code, maker_amt, taker_amt) = if args.side.eq_ignore_ascii_case("BUY") {
-            get_order_amounts_buy(args.size, args.price, &round_cfg, is_fak)?
+            get_order_amounts_buy(args.size, args.price, is_fak)?
         } else if args.side.eq_ignore_ascii_case("SELL") {
-            get_order_amounts_sell(args.size, args.price, &round_cfg, is_fak)?
+            get_order_amounts_sell(args.size, args.price, is_fak)?
         } else {
             return Err(anyhow!("side must be BUY or SELL"));
         };
@@ -750,39 +749,6 @@ impl OrderData {
     }
 }
 
-fn round_config(tick: &str) -> Result<RoundConfig> {
-    match tick {
-        "0.1" => Ok(RoundConfig {
-            price: 1,
-            size: 2,
-            amount: 3,
-        }),
-        "0.01" => Ok(RoundConfig {
-            price: 2,
-            size: 2,
-            amount: 4,
-        }),
-        "0.001" => Ok(RoundConfig {
-            price: 3,
-            size: 2,
-            amount: 5,
-        }),
-        "0.0001" => Ok(RoundConfig {
-            price: 4,
-            size: 2,
-            amount: 6,
-        }),
-        _ => Err(anyhow!("unsupported tick size {}", tick)),
-    }
-}
-
-#[derive(Debug, Clone)]
-struct RoundConfig {
-    price: u32,
-    size: u32,
-    amount: u32,
-}
-
 fn price_valid(price: f64, tick: &str) -> bool {
     let t: f64 = tick.parse().unwrap_or(0.0);
     price >= t && price <= 1.0 - t
@@ -791,7 +757,6 @@ fn price_valid(price: f64, tick: &str) -> bool {
 fn get_order_amounts_buy(
     size: f64,
     price: f64,
-    _cfg: &RoundConfig,
     is_fak: bool,
 ) -> Result<(i32, u128, u128)> {
     // For BUY: taker = shares we receive, maker = USDC we pay
@@ -812,7 +777,6 @@ fn get_order_amounts_buy(
 fn get_order_amounts_sell(
     size: f64,
     price: f64,
-    _cfg: &RoundConfig,
     is_fak: bool,
 ) -> Result<(i32, u128, u128)> {
     // For SELL: maker = shares we sell, taker = USDC we receive
@@ -885,12 +849,7 @@ mod tests {
     #[test]
     fn test_order_amounts_buy_fak() {
         // Test FAK order: 108.68 shares @ 0.14
-        let cfg = RoundConfig {
-            price: 2,
-            size: 2,
-            amount: 4,
-        };
-        let (side, maker_amt, taker_amt) = get_order_amounts_buy(108.68, 0.14, &cfg, true).unwrap();
+        let (side, maker_amt, taker_amt) = get_order_amounts_buy(108.68, 0.14, true).unwrap();
 
         // For a FAK buy order:
         // - taker amount = shares we receive = 108.68 (max 4 decimals)
@@ -904,12 +863,7 @@ mod tests {
     #[test]
     fn test_order_amounts_buy_gtd() {
         // Test GTD order: 77.03 shares @ 0.41 (from error case)
-        let cfg = RoundConfig {
-            price: 2,
-            size: 2,
-            amount: 4,
-        };
-        let (side, maker_amt, taker_amt) = get_order_amounts_buy(77.03, 0.41, &cfg, false).unwrap();
+        let (side, maker_amt, taker_amt) = get_order_amounts_buy(77.03, 0.41, false).unwrap();
 
         // For a GTD buy order:
         // - taker amount = shares = 77.03
@@ -923,12 +877,7 @@ mod tests {
     #[test]
     fn test_order_amounts_sell_fak() {
         // Test FAK selling 100 shares @ 0.50
-        let cfg = RoundConfig {
-            price: 2,
-            size: 2,
-            amount: 4,
-        };
-        let (side, maker_amt, taker_amt) = get_order_amounts_sell(100.0, 0.50, &cfg, true).unwrap();
+        let (side, maker_amt, taker_amt) = get_order_amounts_sell(100.0, 0.50, true).unwrap();
 
         assert_eq!(side, 1);
         assert_eq!(maker_amt, 100_000_000);
@@ -938,13 +887,8 @@ mod tests {
     #[test]
     fn test_order_amounts_sell_gtd() {
         // Test GTD selling 116.88 shares @ 0.45 (from error case)
-        let cfg = RoundConfig {
-            price: 2,
-            size: 2,
-            amount: 4,
-        };
         let (side, maker_amt, taker_amt) =
-            get_order_amounts_sell(116.88, 0.45, &cfg, false).unwrap();
+            get_order_amounts_sell(116.88, 0.45, false).unwrap();
 
         // 116.88 * 0.45 = 52.596 (GTD: 4 decimal precision)
         assert_eq!(side, 1);

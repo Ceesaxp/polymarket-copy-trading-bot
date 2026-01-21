@@ -26,6 +26,7 @@ pub struct ParsedEvent {
     pub trader_address: String,
     /// Human-friendly label for the trader (e.g., "Whale1", "TopTrader")
     /// Empty string if trader is unknown or not yet populated
+    #[allow(dead_code)] // Reserved for future logging/metrics use
     pub trader_label: String,
     pub order: OrderInfo,
 }

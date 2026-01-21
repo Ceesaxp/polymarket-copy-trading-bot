@@ -66,6 +66,7 @@ struct BookResponse {
 #[derive(Debug, Deserialize)]
 struct BookLevel {
     price: String,
+    #[allow(dead_code)] // Required for JSON deserialization structure
     size: String,
 }
 

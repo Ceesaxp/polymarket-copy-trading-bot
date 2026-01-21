@@ -267,20 +267,26 @@ impl TradersConfig {
     }
 
     /// Loads trader configuration with fallback chain:
-    /// 1. Try TRADER_ADDRESSES (new multi-trader format)
-    /// 2. Fall back to TARGET_WHALE_ADDRESS (legacy single trader)
-    /// 3. Error if neither is set
+    /// 1. Try traders.json file (highest priority)
+    /// 2. Try TRADER_ADDRESSES env var (multi-trader format)
+    /// 3. Fall back to TARGET_WHALE_ADDRESS (legacy single trader)
+    /// 4. Error if none found
     ///
     /// # Returns
     /// * `Ok(TradersConfig)` - Loaded configuration
     /// * `Err(String)` - Error if no valid configuration source found
     pub fn load() -> Result<Self, String> {
-        // Try new format first
+        // 1. Try traders.json file first (highest priority)
+        if Path::new("traders.json").exists() {
+            return Self::from_file("traders.json");
+        }
+
+        // 2. Try TRADER_ADDRESSES env var
         if env::var("TRADER_ADDRESSES").is_ok() {
             return Self::from_env();
         }
 
-        // Fall back to legacy TARGET_WHALE_ADDRESS
+        // 3. Fall back to legacy TARGET_WHALE_ADDRESS
         if let Ok(legacy_address) = env::var("TARGET_WHALE_ADDRESS") {
             let normalized = validate_and_normalize_address(&legacy_address)
                 .map_err(|e| format!("Invalid TARGET_WHALE_ADDRESS: {}", e))?;
@@ -290,7 +296,7 @@ impl TradersConfig {
         }
 
         Err(
-            "No trader configuration found. Set either TRADER_ADDRESSES or TARGET_WHALE_ADDRESS environment variable.".to_string()
+            "No trader configuration found. Create traders.json or set TRADER_ADDRESSES/TARGET_WHALE_ADDRESS environment variable.".to_string()
         )
     }
 
