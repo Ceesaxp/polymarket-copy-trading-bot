@@ -52,13 +52,14 @@ pub const DEBUG_FULL_ERRORS: bool = true;
 // ============================================================================
 
 pub const PRICE_BUFFER: f64 = 0.00;
-pub const SCALING_RATIO: f64 = 0.02;
+pub const SCALING_RATIO: f64 = 0.018; // WAS: 0.02 -> 2%
 pub const MIN_CASH_VALUE: f64 = 1.01;
 pub const MIN_SHARE_COUNT: f64 = 0.0;  // Set to 0 to rely purely on MIN_CASH_VALUE for EV scaling
 pub const USE_PROBABILISTIC_SIZING: bool = true;
 
 // Minimum whale trade size to copy (skip trades below this)
-pub const MIN_WHALE_SHARES_TO_COPY: f64 = 10.0;
+pub const MIN_WHALE_SHARES_TO_COPY: f64 = 75.0; // WAS: 10.0; Now: only copy whale trades >= 75
+                                                // shares
 
 /// Returns true if this trade should be skipped (too small, negative expected value)
 #[inline]
