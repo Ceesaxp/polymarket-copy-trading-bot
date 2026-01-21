@@ -10,7 +10,7 @@
 | 2     | Multi-Trader Monitoring | ✅ Complete | **High** |
 | 3     | Trade Aggregation | ✅ Complete | Medium |
 | 4     | Research Tooling (incl. CSV Import) | ✅ Complete | Medium |
-| 5     | Live P&L Tracking | Pending | Low |
+| 5     | Live P&L Tracking | ✅ Complete | Low |
 
 ---
 
@@ -712,30 +712,68 @@ cargo run --bin position_monitor
 
 ---
 
-### Step 5.3: Portfolio Summary Statistics
+### Step 5.3: Portfolio Summary Statistics ✅ COMPLETE
 
-**Implementation**:
-- [ ] Calculate total portfolio value (sum of position values)
-- [ ] Track daily starting value (persist to DB or file)
-- [ ] Calculate daily P&L change
-- [ ] Add `--json` flag with full portfolio data
-- [ ] Optionally integrate with position_monitor or create separate tool
+**Files modified**:
+- `src/bin/position_monitor.rs` (41 tests)
 
-**Testing**:
-- [ ] Test: Portfolio value sums correctly
-- [ ] Test: Daily P&L resets at midnight UTC
+**Implementation**: ✅ ALL COMPLETE
+- [x] Calculate total portfolio value (sum of position values)
+- [x] Track daily starting value (persist to `.portfolio_snapshot.json` file)
+- [x] Calculate daily P&L change
+- [x] Add `--json` flag with full portfolio data
+- [x] Integrated into position_monitor binary
+
+**Features delivered**:
+- `calculate_position_value()` - Market value calculation for long/short positions
+- `calculate_cost_basis()` - Cost basis calculation
+- `calculate_portfolio_summary()` - Aggregate portfolio metrics
+- `DailySnapshot` - Serializable snapshot for daily tracking
+- `check_and_update_snapshot()` - Smart snapshot management (creates new at midnight UTC)
+- `to_portfolio_json()` - JSON output conversion
+- `--json` flag for machine-readable output
+
+**Testing**: ✅ 41 tests
+- [x] Test: Portfolio value sums correctly (long, short, zero positions)
+- [x] Test: Cost basis calculation
+- [x] Test: Portfolio summary aggregation
+- [x] Test: Daily snapshot serialization/deserialization
+- [x] Test: Snapshot path resolution
+- [x] Test: Daily P&L change calculation
+- [x] Test: Snapshot same-day behavior (reuses existing)
+- [x] Test: Snapshot new-day behavior (creates new)
+- [x] Test: JSON flag parsing
+- [x] Test: Portfolio JSON serialization
+
+**Measurable Result**:
+```bash
+# Table output with portfolio summary
+cargo run --bin position_monitor
+
+# === PORTFOLIO SUMMARY ===
+# Total Portfolio Value:  $1250.75
+# Total Cost Basis:       $1100.00
+# Total Unrealized P&L:   $+150.75
+# Daily P&L Change:       $+25.00 (since 2026-01-20)
+# Positions with Prices:  5
+
+# JSON output for automation
+cargo run --bin position_monitor -- --json
+```
 
 ---
 
-### Phase 5 Completion Checklist
+### Phase 5 Completion Checklist ✅ COMPLETE
 
-- [ ] All Step 5.x tasks completed
-- [ ] All unit tests pass
-- [ ] P&L displays correctly for real positions
-- [ ] Price caching works (verify with rate limit testing)
-- [ ] Documentation updated
+- [x] All Step 5.x tasks completed (5.1, 5.2, 5.3)
+- [x] All unit tests pass: 41 position_monitor tests + 19 prices module tests
+- [x] P&L displays correctly for real positions
+- [x] Price caching works with rate limiting and TTL
+- [x] Daily snapshot persistence for P&L tracking
+- [x] JSON output for automation
+- [x] Documentation updated in code
 
-**Phase 5 Deliverable**: Position monitor shows real-time P&L with live market prices.
+**Phase 5 Deliverable**: Position monitor shows real-time P&L with live market prices, portfolio summary, daily P&L tracking, and JSON export. ✅
 
 ---
 
@@ -804,6 +842,7 @@ src/
   aggregator.rs              # NEW
   trader_state.rs            # NEW
   api.rs                     # NEW (optional)
+  prices.rs                  # NEW (Phase 5)
 
   bin/
     position_monitor.rs      # NEW
@@ -851,6 +890,25 @@ research/
 - [x] Step 4.2: Python Research Scripts ✅ (3 scripts + notebook)
 - [x] Phase 4 Complete ✅
 
+### Phase 5: Live P&L Tracking ✅ COMPLETE
+- [x] Step 5.1: Price Fetcher Module ✅ (19 tests)
+- [x] Step 5.2: Enhanced Position Monitor with P&L ✅ (20 tests)
+- [x] Step 5.3: Portfolio Summary Statistics ✅ (41 tests)
+- [x] Phase 5 Complete ✅
+
 ---
 
-*Last updated: 2026-01-20*
+## Project Complete! 🎉
+
+All 5 phases implemented with comprehensive test coverage:
+- **Phase 1**: SQLite Persistence + Position Tracking
+- **Phase 2**: Multi-Trader Monitoring
+- **Phase 3**: Trade Aggregation
+- **Phase 4**: Research Tooling (CSV Import, API, Python Scripts)
+- **Phase 5**: Live P&L Tracking (Price Fetcher, Portfolio Summary, Daily P&L)
+
+Total tests: 203+ library tests + 41 position_monitor tests
+
+---
+
+*Last updated: 2026-01-21*
