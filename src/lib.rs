@@ -27,6 +27,7 @@ pub mod config;
 pub mod market_cache;
 pub mod models;
 pub mod persistence;
+pub mod prices;
 pub mod risk_guard;
 pub mod settings;
 pub mod soccer_markets;
