@@ -144,14 +144,30 @@ See [Features Overview](docs/04_FEATURES.md) for feature details and [Strategy G
 
 ## 6. Features
 
-- ✅ Real-time trade copying
+### Core Trading
+- ✅ Real-time trade copying (<100ms latency)
 - ✅ Intelligent position sizing (2% default, configurable)
 - ✅ Circuit breakers for risk management
 - ✅ Automatic order resubmission on failures
 - ✅ Market cache system for fast lookups
-- ✅ CSV logging for all trades
 - ✅ Live market detection
 - ✅ Tiered execution based on trade size
+- ✅ Trade aggregation (combines rapid small trades)
+
+### Multi-Trader Support
+- ✅ Monitor multiple whale addresses simultaneously
+- ✅ Per-trader configuration (scaling ratios, thresholds)
+- ✅ Per-trader statistics tracking
+- ✅ Trader comparison tools
+
+### Persistence & Analytics
+- ✅ SQLite database for all trades
+- ✅ CSV logging (backward compatible)
+- ✅ Position monitoring with live P&L
+- ✅ Portfolio summary statistics
+- ✅ Daily P&L tracking
+- ✅ HTTP API for data export
+- ✅ JSON output for automation
 
 ## 7. Advanced Usage
 
@@ -168,7 +184,27 @@ cargo run --release --bin mempool_monitor
 cargo run --release --bin trade_monitor
 ```
 
-### 7.2 Utility Binaries
+### 7.2 Position & Analytics Tools
+
+```bash
+# Monitor positions with live P&L and portfolio summary
+cargo run --release --bin position_monitor
+cargo run --release --bin position_monitor -- --json          # JSON output
+cargo run --release --bin position_monitor -- --no-prices     # Skip price fetching
+cargo run --release --bin position_monitor -- --stats         # Show aggregation statistics
+
+# Query trade history with filters
+cargo run --release --bin trade_history
+cargo run --release --bin trade_history -- --trader whale1    # Filter by trader
+cargo run --release --bin trade_history -- --since 1704067200 # Since timestamp
+cargo run --release --bin trade_history -- --format json      # JSON/CSV output
+
+# Compare performance across traders
+cargo run --release --bin trader_comparison
+cargo run --release --bin trader_comparison -- --format csv   # CSV export
+```
+
+### 7.3 Utility Binaries
 
 ```bash
 # Validate configuration before running
@@ -185,9 +221,30 @@ cargo run --release --bin validate_profile
 
 # Debug order signing (for troubleshooting)
 cargo run --release --bin debug_signing
+
+# Import legacy CSV data into SQLite database
+cargo run --release --bin import_csv <csv_file> [--db <db_path>] [--dry-run]
 ```
 
-### 7.3 Helper Scripts (Python)
+### 7.4 Research Tools (Python)
+
+Located in `research/` directory. Install with `pip install -r research/requirements.txt`.
+
+```bash
+# Fetch Polymarket leaderboard data
+python research/fetch_leaderboard.py --top 50 --format csv
+
+# Analyze trades from database
+python research/analyze_trader.py --db trades.db
+
+# Backtest copy trading strategy
+python research/backtest_strategy.py --scale 0.5 --min-shares 10
+
+# Interactive analysis (Jupyter notebook)
+jupyter notebook research/notebooks/analysis.ipynb
+```
+
+### 7.5 Helper Scripts (Python)
 
 Located in `scripts/` directory. Require Python 3 and dependencies from `scripts/pyproject.toml`.
 
@@ -206,7 +263,7 @@ python scripts/realtime_divergence.py
 python scripts/test_order.py
 ```
 
-### 7.4 Building for Production
+### 7.6 Building for Production
 
 ```bash
 # Optimized release build
@@ -218,9 +275,18 @@ cargo build --release
 
 ## 8. Output Files
 
-- `matches_optimized.csv` - All detected and executed trades
+### Data Files
+- `trades.db` - SQLite database with all trades (primary storage)
+- `matches_optimized.csv` - CSV log of all trades (backward compatible)
+- `.portfolio_snapshot.json` - Daily portfolio snapshot for P&L tracking
+
+### Cache Files
 - `.clob_creds.json` - Auto-generated API credentials (don't modify)
 - `.clob_market_cache.json` - Market data cache (auto-updated)
+
+### Configuration Files
+- `.env` - Your configuration (from `.env.example`)
+- `traders.json` - Multi-trader configuration (optional, see `traders.json.example`)
 
 ## 9. Getting Help
 
