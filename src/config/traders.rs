@@ -127,26 +127,27 @@ pub fn validate_and_normalize_address(input: &str) -> Result<String, String> {
     Ok(without_prefix.to_lowercase())
 }
 
-/// Converts a normalized 40-character address to a 64-character topic hex for WebSocket filtering
+/// Converts a normalized 40-character address to a 66-character topic hex for WebSocket filtering
 ///
 /// # Arguments
 /// * `address` - A normalized 40-character hex address (no 0x prefix, lowercase)
 ///
 /// # Returns
-/// A 64-character hex string with 24 leading zeros followed by the address
+/// A 66-character hex string with 0x prefix, 24 leading zeros, followed by the address
 ///
 /// # Examples
 /// ```
 /// use pm_whale_follower::config::traders::address_to_topic_hex;
 ///
 /// let topic = address_to_topic_hex("abc123def456789012345678901234567890abcd");
-/// assert_eq!(topic.len(), 64);
-/// assert_eq!(topic, "000000000000000000000000abc123def456789012345678901234567890abcd");
+/// assert_eq!(topic.len(), 66);
+/// assert_eq!(topic, "0x000000000000000000000000abc123def456789012345678901234567890abcd");
 /// ```
 pub fn address_to_topic_hex(address: &str) -> String {
-    // Pad address to 64 characters with leading zeros
+    // Pad address to 64 characters with leading zeros, then add 0x prefix
+    // WebSocket topics include the 0x prefix, so we must match that format
     // 64 total - 40 address = 24 zeros needed
-    format!("{:0>64}", address)
+    format!("0x{:0>64}", address)
 }
 
 /// Configuration for multiple traders to monitor

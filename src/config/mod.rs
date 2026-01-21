@@ -118,8 +118,8 @@ mod tests {
     fn test_address_to_topic_hex_40_chars() {
         let address = "abc123def456789012345678901234567890abcd";
         let topic = address_to_topic_hex(address);
-        assert_eq!(topic.len(), 64);
-        assert_eq!(topic, "000000000000000000000000abc123def456789012345678901234567890abcd");
+        assert_eq!(topic.len(), 66); // 0x prefix + 64 hex chars
+        assert_eq!(topic, "0x000000000000000000000000abc123def456789012345678901234567890abcd");
     }
 
     #[test]
@@ -133,22 +133,23 @@ mod tests {
     fn test_address_to_topic_hex_all_zeros() {
         let address = "0000000000000000000000000000000000000000";
         let topic = address_to_topic_hex(address);
-        assert_eq!(topic, "0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(topic, "0x0000000000000000000000000000000000000000000000000000000000000000");
     }
 
     #[test]
     fn test_address_to_topic_hex_all_fs() {
         let address = "ffffffffffffffffffffffffffffffffffffffff";
         let topic = address_to_topic_hex(address);
-        assert_eq!(topic, "000000000000000000000000ffffffffffffffffffffffffffffffffffffffff");
+        assert_eq!(topic, "0x000000000000000000000000ffffffffffffffffffffffffffffffffffffffff");
     }
 
     #[test]
     fn test_address_to_topic_hex_correct_padding() {
         let address = "abc123def456789012345678901234567890abcd";
         let topic = address_to_topic_hex(address);
-        // Should have 24 leading zeros (64 total - 40 address = 24 padding)
-        let padding = &topic[..24];
+        // Should have 0x prefix + 24 leading zeros (66 total = 2 prefix + 24 zeros + 40 address)
+        assert!(topic.starts_with("0x"));
+        let padding = &topic[2..26]; // After 0x, next 24 chars should be zeros
         assert_eq!(padding, "000000000000000000000000");
     }
 
@@ -166,7 +167,7 @@ mod tests {
         let config = config.unwrap();
         assert_eq!(config.address, "abc123def456789012345678901234567890abcd");
         assert_eq!(config.label, "Whale1");
-        assert_eq!(config.topic_hex, "000000000000000000000000abc123def456789012345678901234567890abcd");
+        assert_eq!(config.topic_hex, "0x000000000000000000000000abc123def456789012345678901234567890abcd");
         assert_eq!(config.scaling_ratio, 0.02); // default
         assert_eq!(config.min_shares, 0.0); // default
         assert!(config.enabled); // default
@@ -215,8 +216,9 @@ mod tests {
             "1234567890abcdef1234567890abcdef12345678",
             "Test",
         ).unwrap();
-        assert_eq!(config.topic_hex.len(), 64);
+        assert_eq!(config.topic_hex.len(), 66); // 0x prefix + 64 hex chars
         assert!(config.topic_hex.ends_with("1234567890abcdef1234567890abcdef12345678"));
+        assert!(config.topic_hex.starts_with("0x"));
     }
 
     // =========================================================================
@@ -269,8 +271,8 @@ mod tests {
 
         let filter = config.build_topic_filter();
         assert_eq!(filter.len(), 2);
-        assert!(filter.contains(&"000000000000000000000000abc123def456789012345678901234567890abcd".to_string()));
-        assert!(filter.contains(&"000000000000000000000000def456abc123789012345678901234567890abcd".to_string()));
+        assert!(filter.contains(&"0x000000000000000000000000abc123def456789012345678901234567890abcd".to_string()));
+        assert!(filter.contains(&"0x000000000000000000000000def456abc123789012345678901234567890abcd".to_string()));
     }
 
     #[test]
@@ -285,11 +287,11 @@ mod tests {
         ).unwrap();
         let config = TradersConfig::new(vec![trader1, trader2]);
 
-        let found = config.get_by_topic("000000000000000000000000abc123def456789012345678901234567890abcd");
+        let found = config.get_by_topic("0x000000000000000000000000abc123def456789012345678901234567890abcd");
         assert!(found.is_some());
         assert_eq!(found.unwrap().label, "Whale1");
 
-        let not_found = config.get_by_topic("000000000000000000000000999999999999999999999999999999999999999");
+        let not_found = config.get_by_topic("0x000000000000000000000000999999999999999999999999999999999999999");
         assert!(not_found.is_none());
     }
 
@@ -349,7 +351,7 @@ mod tests {
         // Topic filter should only include enabled traders
         let filter = config.build_topic_filter();
         assert_eq!(filter.len(), 1);
-        assert!(filter.contains(&"000000000000000000000000def456abc123789012345678901234567890abcd".to_string()));
+        assert!(filter.contains(&"0x000000000000000000000000def456abc123789012345678901234567890abcd".to_string()));
     }
 
     // =========================================================================
@@ -729,14 +731,14 @@ mod tests {
         let topics = config.build_topic_filter();
         assert_eq!(topics.len(), 2); // Only enabled traders
 
-        // Verify topics are correctly padded
+        // Verify topics are correctly padded (0x prefix + 64 hex chars)
         for topic in &topics {
-            assert_eq!(topic.len(), 64);
-            assert!(topic.starts_with("0000"));
+            assert_eq!(topic.len(), 66);
+            assert!(topic.starts_with("0x"));
         }
 
-        // Test topic lookup (simulating WebSocket event)
-        let whale1_topic = "000000000000000000000000204f72f35326db932158cba6adff0b9a1da95e14";
+        // Test topic lookup (simulating WebSocket event with 0x prefix)
+        let whale1_topic = "0x000000000000000000000000204f72f35326db932158cba6adff0b9a1da95e14";
         let trader = config.get_by_topic(whale1_topic).unwrap();
         assert_eq!(trader.label, "Whale1");
         assert_eq!(trader.scaling_ratio, 0.03);
@@ -752,7 +754,7 @@ mod tests {
         assert_eq!(disabled.label, "DisabledWhale");
         assert!(!disabled.enabled);
 
-        let disabled_topic = "000000000000000000000000abc123def456789012345678901234567890abcd";
+        let disabled_topic = "0x000000000000000000000000abc123def456789012345678901234567890abcd";
         assert!(!topics.contains(&disabled_topic.to_string()));
 
         // Test iteration
@@ -760,7 +762,7 @@ mod tests {
         for trader in config.iter() {
             assert!(!trader.address.is_empty());
             assert!(!trader.label.is_empty());
-            assert_eq!(trader.topic_hex.len(), 64);
+            assert_eq!(trader.topic_hex.len(), 66); // 0x prefix + 64 hex chars
             count += 1;
         }
         assert_eq!(count, 3);
