@@ -71,15 +71,16 @@ The bot doesn't copy trades at 1:1 size. Instead, it uses scaled positions:
 
 Different trade sizes get different execution strategies:
 
-| Trade Size (Shares) | Price Buffer | Size Multiplier | Strategy |
-|---------------------|--------------|-----------------|----------|
-| 4000+ (Large)       | +0.01        | 1.25x           | Aggressive |
-| 2000-3999 (Medium)  | +0.01        | 1.0x            | Standard |
-| 1000-1999 (Small)   | +0.00        | 1.0x            | Conservative |
-| <1000 (Very Small)  | +0.00        | 1.0x            | Conservative |
+| Trade Size (Shares) | Price Buffer | Size Multiplier | Resubmit Buffer | Strategy |
+|---------------------|--------------|-----------------|-----------------|----------|
+| 4000+ (Large)       | +0.01        | 1.25x           | +0.01           | Aggressive |
+| 2000-3999 (Medium)  | +0.01        | 1.0x            | +0.01           | Standard |
+| 1000-1999 (Small)   | +0.00        | 1.0x            | +0.01           | Conservative |
+| <1000 (Very Small)  | +0.00        | 1.0x            | +0.01           | Conservative |
 
-**Price Buffer:** Additional amount paid above whale's price (improves fill rate)  
+**Price Buffer:** Additional amount paid above whale's price (improves fill rate)
 **Size Multiplier:** Your position size relative to whale (1.25x = 25% larger than normal scaling)
+**Resubmit Buffer:** Maximum additional buffer allowed during resubmission attempts
 
 **Large trades (4000+ shares):**
 - More aggressive (higher buffer, larger size)
@@ -126,12 +127,16 @@ If an order fails to fill completely:
 1. Initial order fails (FAK)
 2. Retry #1: Same price or +0.01 (if large trade)
 3. Retry #2-4: Same price (flat retries)
-4. Final attempt: GTD order (stays on book)
+4. Final attempt: GTD order with spread-crossing
+
+**GTD Spread-Crossing:**
+On the final attempt, the bot fetches the current best ask from the order book and sets the GTD price to `min(max_price, best_ask)`. This ensures the GTD order crosses the spread and has a better chance of filling, rather than sitting passively on the book.
 
 **Why this helps:**
 - Market conditions change quickly
 - Improves fill rate on volatile markets
 - Balances speed vs. execution quality
+- GTD spread-crossing maximizes final attempt success
 
 ---
 
@@ -367,6 +372,14 @@ cargo run --bin trade_history
 - `--since <timestamp>` - Filter by time
 - `--status <status>` - Filter by execution status
 
+**Live Data Enrichment:**
+- `--refresh` - Fetch live market data from Polymarket APIs
+
+When using `--refresh`, the tool fetches:
+- Market titles and outcome names from Gamma API
+- Current market prices for P&L calculation
+- Displays enriched data with unrealized P&L per position
+
 **Output formats:**
 - Table (default)
 - CSV (`--format csv`)
@@ -481,21 +494,25 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
    - Apply tier multiplier (1.25x for 4000+, 1.0x otherwise)
    - Check minimum size ($1.01 requirement)
    - Probabilistic execution for very small positions
-7. **Price Calculation:** Determine limit price:
+7. **Position Check (SELL orders only):**
+   - For SELL orders, check if we hold shares of this token
+   - If no position exists, skip with SKIPPED_NO_POSITION
+   - Prevents "not enough balance" errors from exchange
+8. **Price Calculation:** Determine limit price:
    - Get base buffer from tier (0.01 for large, 0.00 for small)
    - Add sport-specific buffers (tennis/soccer: +0.01)
    - Calculate: whale_price + total_buffer
    - Clamp to valid range (0.01-0.99)
-8. **Order Type Selection:** 
+9. **Order Type Selection:**
    - SELL orders: Always GTD
    - BUY orders: FAK initially, GTD on final retry
-9. **Order Creation:** Create signed order with calculated parameters
-10. **Submission:** Submit order to Polymarket API
-11. **Result Handling:**
+10. **Order Creation:** Create signed order with calculated parameters
+11. **Submission:** Submit order to Polymarket API
+12. **Result Handling:**
     - Success: Check fill amount, resubmit if partial
     - Failure: Enter resubmission loop (4-5 attempts)
     - Final attempt: Switch to GTD order if still not filled
-12. **Logging:** Record all details to CSV and console with color-coded status
+13. **Logging:** Record all details to CSV and console with color-coded status
 
 ---
 
@@ -541,14 +558,15 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 
 ## 10. Safety Features Summary
 
-✅ Scaled position sizes (2% default)  
-✅ Circuit breakers for dangerous conditions  
-✅ Minimum trade size filters  
-✅ Order book depth checks  
-✅ Automatic retry with limits  
-✅ Comprehensive error handling  
-✅ Mock trading mode for testing  
-✅ Extensive logging for audit  
+✅ Scaled position sizes (2% default)
+✅ Circuit breakers for dangerous conditions
+✅ Minimum trade size filters
+✅ Order book depth checks
+✅ Automatic retry with limits
+✅ Comprehensive error handling
+✅ Mock trading mode for testing
+✅ Extensive logging for audit
+✅ SELL order position check (skips if no shares held)  
 
 ---
 

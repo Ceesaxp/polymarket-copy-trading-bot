@@ -155,7 +155,7 @@ The bot uses **tiered execution** based on trade size to optimize for different 
 - Order type: FAK
 - Resubmit attempts: 4
 - Price chasing: No
-- Max resubmit buffer: 0.00
+- Max resubmit buffer: +0.01
 
 **Rationale:** Standard execution with moderate buffer. No price chasing prevents overpaying.
 
@@ -166,9 +166,9 @@ The bot uses **tiered execution** based on trade size to optimize for different 
 - Order type: FAK
 - Resubmit attempts: 4
 - Price chasing: No
-- Max resubmit buffer: 0.00
+- Max resubmit buffer: +0.01
 
-**Rationale:** Small trades get conservative treatment. No buffer minimizes slippage.
+**Rationale:** Small trades get conservative treatment. No initial buffer minimizes slippage.
 
 #### Tier 4: Very Small Trades (<1000 shares)
 **Strategy:** Minimal execution
@@ -177,9 +177,9 @@ The bot uses **tiered execution** based on trade size to optimize for different 
 - Order type: FAK
 - Resubmit attempts: 4
 - Price chasing: No
-- Max resubmit buffer: 0.00
+- Max resubmit buffer: +0.01
 
-**Rationale:** Minimal exposure, minimal slippage. Probabilistic sizing may skip very small trades.
+**Rationale:** Minimal exposure, minimal initial slippage. Probabilistic sizing may skip very small trades.
 
 ### 2.5 Order Type Selection
 
@@ -299,7 +299,10 @@ When an order fails to fill completely, the bot implements intelligent resubmiss
    ↓
 5. Repeat until max attempts or fully filled
    ↓
-6. Final attempt: GTD order (if not fully filled)
+6. Final attempt: GTD order with spread-crossing
+   - Fetch current best ask from order book
+   - Set price to min(max_price, best_ask) to ensure spread crossing
+   - Place GTD order on book
 ```
 
 #### Price Escalation Rules
@@ -351,6 +354,10 @@ When an order fails to fill completely, the bot implements intelligent resubmiss
 3. RISK CHECK (Layer 1)
    ├─ Trade too small? → YES → SKIP (SKIPPED_SMALL)
    └─ Continue
+   ↓
+3.5. POSITION CHECK (SELL orders only)
+   ├─ Is SELL order? → NO → Continue
+   └─ Do we hold shares? → NO → SKIP (SKIPPED_NO_POSITION)
    ↓
 4. SEQUENCE CHECK (Layer 2)
    ├─ Large trade? → YES → Add to sequence
@@ -1059,12 +1066,17 @@ fn process_order(order_info: &OrderInfo) -> String {
     // FILTER 1: Skip disabled trading
     if !enable_trading { return "SKIPPED_DISABLED"; }
     if mock_trading { return "MOCK_ONLY"; }
-    
+
     // FILTER 2: Minimum trade size
     if order_info.shares < MIN_WHALE_SHARES_TO_COPY {
         return "SKIPPED_SMALL";
     }
-    
+
+    // FILTER 3: Position check for SELL orders
+    if !is_buy && !has_position(token_id) {
+        return "SKIPPED_NO_POSITION";
+    }
+
     // RISK CHECK 1: Fast path (no book fetch)
     let eval = risk_guard.check_fast(&token_id, shares);
     
@@ -1131,6 +1143,13 @@ START: Blockchain Event Received
 ├─ [Trade size >= minimum?]
 │  ├─ NO → SKIP (SKIPPED_SMALL)
 │  └─ YES → Continue
+│
+├─ POSITION CHECK (SELL orders only)
+│  ├─ Is SELL order?
+│  │  ├─ YES → Do we hold shares?
+│  │  │  ├─ NO → SKIP (SKIPPED_NO_POSITION)
+│  │  │  └─ YES → Continue
+│  │  └─ NO → Continue (BUY orders skip this check)
 │
 ├─ RISK CHECK LAYER 1: Fast Check
 │  ├─ Token tripped? → YES → BLOCK (RISK_BLOCKED: TRIPPED)
