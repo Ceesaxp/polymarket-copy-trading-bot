@@ -218,27 +218,35 @@ impl TradeAggregator {
         // Check if we should flush due to max_pending_usd
         let total_usd: f64 = pending_trades.iter().map(|t| t.usd_value()).sum();
         if total_usd >= self.config.max_pending_usd {
-            return self.flush_key(&key);
+            return self.flush_key_if_ready(&key);
         }
 
         None
     }
 
-    /// Flush all pending trades for a specific key
-    fn flush_key(&mut self, key: &str) -> Option<AggregatedTrade> {
+    /// Flush pending trades for a specific key (used for USD threshold flush)
+    /// Only flushes if min_trades threshold is met (to encourage aggregation)
+    fn flush_key_if_ready(&mut self, key: &str) -> Option<AggregatedTrade> {
         if let Some(trades) = self.pending.remove(key) {
             if trades.len() >= self.config.min_trades {
                 return AggregatedTrade::from_trades(trades);
             } else {
-                // Put back if not enough trades
+                // Put back if not enough trades yet - wait for more or window expiry
                 self.pending.insert(key.to_string(), trades);
             }
         }
         None
     }
 
+    /// Force flush all pending trades for a specific key (window expired)
+    /// Executes regardless of trade count - window timeout means no more trades coming
+    fn flush_key_force(&mut self, key: &str) -> Option<AggregatedTrade> {
+        self.pending.remove(key).and_then(AggregatedTrade::from_trades)
+    }
+
     /// Check and flush expired windows
     /// Returns a vector of aggregated trades ready for execution
+    /// Note: Expired windows are force-flushed regardless of trade count
     pub fn flush_expired(&mut self) -> Vec<AggregatedTrade> {
         let now = Instant::now();
         let mut to_flush = Vec::new();
@@ -252,10 +260,10 @@ impl TradeAggregator {
             }
         }
 
-        // Flush expired keys
+        // Force flush expired keys (execute regardless of trade count)
         let mut aggregated = Vec::new();
         for key in to_flush {
-            if let Some(agg) = self.flush_key(&key) {
+            if let Some(agg) = self.flush_key_force(&key) {
                 aggregated.push(agg);
             }
         }
@@ -264,18 +272,12 @@ impl TradeAggregator {
     }
 
     /// Flush all pending trades (used during shutdown)
+    /// Force flushes everything - no point waiting on shutdown
     pub fn flush_all(&mut self) -> Vec<AggregatedTrade> {
-        let mut aggregated = Vec::new();
-
-        for (_key, trades) in self.pending.drain() {
-            if trades.len() >= self.config.min_trades {
-                if let Some(agg) = AggregatedTrade::from_trades(trades) {
-                    aggregated.push(agg);
-                }
-            }
-        }
-
-        aggregated
+        self.pending
+            .drain()
+            .filter_map(|(_, trades)| AggregatedTrade::from_trades(trades))
+            .collect()
     }
 
     /// Get count of pending trades
@@ -671,25 +673,36 @@ mod tests {
 
         assert_eq!(aggregator.pending_count(), 3);
 
-        // Flush all
+        // Flush all - force flushes everything on shutdown
         let all = aggregator.flush_all();
 
-        // Should get 1 aggregated trade (token1 with 2 trades)
-        // token2 only has 1 trade, below min_trades
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].trade_count, 2);
+        // Should get 2 aggregated trades:
+        // - token1 with 2 trades combined
+        // - token2 with 1 trade (still executed, just not aggregated)
+        assert_eq!(all.len(), 2);
         assert_eq!(aggregator.pending_count(), 0);
+
+        // Find the token1 aggregation (has 2 trades)
+        let token1_agg = all.iter().find(|a| a.trade_count == 2).unwrap();
+        assert_eq!(token1_agg.total_shares, 200.0);
+
+        // Find the token2 aggregation (has 1 trade)
+        let token2_agg = all.iter().find(|a| a.trade_count == 1).unwrap();
+        assert_eq!(token2_agg.total_shares, 100.0);
     }
 
     #[test]
-    fn test_aggregator_min_trades_requirement() {
+    fn test_aggregator_min_trades_early_flush() {
+        // Test that min_trades only affects early flush (USD threshold),
+        // not window expiry or shutdown flush
         let config = AggregationConfig {
             min_trades: 3,
+            max_pending_usd: 50.0, // Low threshold to test
             ..Default::default()
         };
         let mut aggregator = TradeAggregator::new(config);
 
-        // Add 2 trades
+        // Add 2 trades (total USD = 100, above threshold but below min_trades)
         aggregator.add_trade(
             "0xabc123".to_string(),
             "BUY".to_string(),
@@ -698,7 +711,9 @@ mod tests {
             "0xtrader1".to_string(),
         );
 
-        aggregator.add_trade(
+        // Second trade triggers USD threshold check, but min_trades=3 not met
+        // So it stays pending (not early flushed)
+        let result = aggregator.add_trade(
             "0xabc123".to_string(),
             "BUY".to_string(),
             100.0,
@@ -706,9 +721,14 @@ mod tests {
             "0xtrader2".to_string(),
         );
 
-        // Flush all - should not aggregate because min_trades = 3
+        // Should NOT early flush because min_trades=3 not met
+        assert!(result.is_none());
+        assert_eq!(aggregator.pending_count(), 2);
+
+        // But flush_all (shutdown) should still execute them
         let all = aggregator.flush_all();
-        assert_eq!(all.len(), 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].trade_count, 2);
     }
 
     #[test]
