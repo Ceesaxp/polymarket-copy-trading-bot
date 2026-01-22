@@ -163,7 +163,7 @@ async fn run_ws_loop(wss_url: &str) -> Result<()> {
                                 if v.get("id").and_then(|i| i.as_i64()) == Some(1) {
                                     if let Some(result) = v.get("result") {
                                         subscription_confirmed = true;
-                                        println!("✅ Subscription confirmed: {}", result);
+                                        println!("✅ Subscription active (sub_id: {})", result);
                                         println!("👀 Listening for your fills...");
                                         continue;
                                     } else if let Some(error) = v.get("error") {
