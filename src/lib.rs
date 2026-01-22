@@ -762,8 +762,9 @@ fn get_order_amounts_buy(
 ) -> Result<(i32, u128, u128)> {
     // For BUY: taker = shares we receive, maker = USDC we pay
     // FAK (market orders): USDC max 2 decimals, shares max 4 decimals
-    // GTD/GTC (limit orders): USDC max 4 decimals, shares max 2 decimals
-    let usdc_decimals = if is_fak { 2 } else { 4 };
+    // GTD/GTC (limit orders): USDC max 6 decimals (full precision), shares max 2 decimals
+    // Note: GTD needs 6 decimals to match Polymarket's exact calculation for low prices
+    let usdc_decimals = if is_fak { 2 } else { 6 };
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_taker = round_down(size, shares_decimals);
     let raw_maker = round_down(raw_taker * price, usdc_decimals);
@@ -782,8 +783,9 @@ fn get_order_amounts_sell(
 ) -> Result<(i32, u128, u128)> {
     // For SELL: maker = shares we sell, taker = USDC we receive
     // FAK (market orders): USDC max 2 decimals, shares max 4 decimals
-    // GTD/GTC (limit orders): USDC max 4 decimals, shares max 2 decimals
-    let usdc_decimals = if is_fak { 2 } else { 4 };
+    // GTD/GTC (limit orders): USDC max 6 decimals (full precision), shares max 2 decimals
+    // Note: GTD needs 6 decimals to match Polymarket's exact calculation for low prices
+    let usdc_decimals = if is_fak { 2 } else { 6 };
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_maker = round_down(size, shares_decimals);
     let raw_taker = round_down(raw_maker * price, usdc_decimals);
@@ -868,11 +870,26 @@ mod tests {
 
         // For a GTD buy order:
         // - taker amount = shares = 77.03
-        // - maker amount = USDC = 77.03 * 0.41 = 31.5823 (GTD: 4 decimal precision)
+        // - maker amount = USDC = 77.03 * 0.41 = 31.5823 (GTD: 6 decimal precision)
 
         assert_eq!(side, 0);
         assert_eq!(taker_amt, 77_030_000);
-        assert_eq!(maker_amt, 31_582_300); // GTD: 4 decimal USDC (31.5823)
+        assert_eq!(maker_amt, 31_582_300); // GTD: 6 decimal USDC (31.5823)
+    }
+
+    #[test]
+    fn test_order_amounts_buy_gtd_low_price() {
+        // Test GTD order at low price: 48.09 shares @ 0.021 (from actual error case)
+        // Error was: "maker amount should be '1.00989' but value submitted is '1.0098'"
+        let (side, maker_amt, taker_amt) = get_order_amounts_buy(48.09, 0.021, false).unwrap();
+
+        // 48.09 * 0.021 = 1.00989 -> needs 5 decimal precision (hence we use 6)
+        // With old 4-decimal code: round_down(1.00989, 4) = 1.0098 -> 1_009_800 (WRONG)
+        // With new 6-decimal code: round_down(1.00989, 6) = 1.00989 -> 1_009_890 (CORRECT)
+
+        assert_eq!(side, 0);
+        assert_eq!(taker_amt, 48_090_000);
+        assert_eq!(maker_amt, 1_009_890); // Must be 1.00989 exactly, not 1.0098
     }
 
     #[test]
