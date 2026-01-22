@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
     let client_arc = Arc::new(client);
     let creds_arc = Arc::new(prepared_creds.clone());
 
-    start_order_worker(order_rx, client_arc.clone(), prepared_creds, cfg.enable_trading, cfg.mock_trading, risk_config, resubmit_tx.clone());
+    start_order_worker(order_rx, client_arc.clone(), prepared_creds, cfg.enable_trading, cfg.mock_trading, risk_config, resubmit_tx.clone(), stats_persist_path.clone());
 
     tokio::spawn(resubmit_worker(resubmit_rx, client_arc, creds_arc));
 
@@ -190,6 +190,8 @@ async fn main() -> Result<()> {
     if let Some(ref agg) = aggregator {
         let agg_clone = Arc::clone(agg);
         let order_engine_clone = order_engine.clone();
+        let trade_tx_clone = trade_tx.clone();
+        let trader_manager_clone = Arc::clone(&trader_manager);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(100));
             loop {
@@ -215,8 +217,18 @@ async fn main() -> Result<()> {
 
                     // Convert aggregated trade to event and execute
                     let evt = aggregated.to_parsed_event();
-                    let status = order_engine_clone.submit(evt, is_live).await;
+                    let status = order_engine_clone.submit(evt.clone(), is_live).await;
                     println!("[AGG] Flush result: {}", status);
+
+                    // Record the aggregated trade result to CSV and DB
+                    record_aggregated_trade(
+                        &evt,
+                        &status,
+                        is_live,
+                        &trade_tx_clone,
+                        &trader_manager_clone,
+                        count,
+                    ).await;
                 }
             }
         });
@@ -226,6 +238,8 @@ async fn main() -> Result<()> {
     // Note: When the channel is dropped, the persistence worker will flush and exit
     let aggregator_shutdown = aggregator.clone();
     let order_engine_shutdown = order_engine.clone();
+    let trade_tx_shutdown = trade_tx.clone();
+    let trader_manager_shutdown = Arc::clone(&trader_manager);
     tokio::spawn(async move {
         if let Ok(()) = tokio::signal::ctrl_c().await {
             println!("\nReceived shutdown signal, shutting down...");
@@ -246,9 +260,10 @@ async fn main() -> Result<()> {
                     // Execute pending aggregations before exit
                     for aggregated in pending_aggregations {
                         let token_id = aggregated.token_id.clone();
+                        let count = aggregated.trade_count;
                         println!(
                             "[AGG] Shutdown flush: {} trades -> {:.2} shares @ {:.4} avg",
-                            aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
+                            count, aggregated.total_shares, aggregated.avg_price
                         );
 
                         // Get market liveness from cache
@@ -256,8 +271,18 @@ async fn main() -> Result<()> {
 
                         // Execute the aggregated trade
                         let evt = aggregated.to_parsed_event();
-                        let status = order_engine_shutdown.submit(evt, is_live).await;
+                        let status = order_engine_shutdown.submit(evt.clone(), is_live).await;
                         println!("[AGG] Shutdown result: {}", status);
+
+                        // Record the trade result to CSV and DB
+                        record_aggregated_trade(
+                            &evt,
+                            &status,
+                            is_live,
+                            &trade_tx_shutdown,
+                            &trader_manager_shutdown,
+                            count,
+                        ).await;
                     }
                 }
             }
@@ -316,10 +341,11 @@ fn start_order_worker(
     mock_trading: bool,
     risk_config: RiskGuardConfig,
     resubmit_tx: mpsc::UnboundedSender<ResubmitRequest>,
+    db_path: Option<String>,
 ) {
     std::thread::spawn(move || {
         let mut guard = RiskGuard::new(risk_config);
-        order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx);
+        order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx, db_path.as_deref());
     });
 }
 
@@ -364,10 +390,11 @@ fn order_worker(
     mock_trading: bool,
     guard: &mut RiskGuard,
     resubmit_tx: mpsc::UnboundedSender<ResubmitRequest>,
+    db_path: Option<&str>,
 ) {
     let mut client_mut = (*client).clone();
     while let Some(work) = rx.blocking_recv() {
-        let status = process_order(&work.event.order, work.event.trader_min_shares, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live);
+        let status = process_order(&work.event.order, work.event.trader_min_shares, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live, db_path);
         let _ = work.respond_to.send(status);
     }
 }
@@ -386,6 +413,7 @@ fn process_order(
     guard: &mut RiskGuard,
     resubmit_tx: &mpsc::UnboundedSender<ResubmitRequest>,
     is_live: Option<bool>,
+    db_path: Option<&str>,
 ) -> String {
     if !enable_trading { return "SKIPPED_DISABLED".into(); }
     if mock_trading { return "MOCK_ONLY".into(); }
@@ -393,6 +421,35 @@ fn process_order(
     let side_is_buy = info.order_type.starts_with("BUY");
     let whale_shares = info.shares;
     let whale_price = info.price_per_share;
+
+    // For SELL orders, check if we have shares to sell
+    if !side_is_buy {
+        if let Some(path) = db_path {
+            match TradeStore::new(path) {
+                Ok(store) => {
+                    match store.get_positions() {
+                        Ok(positions) => {
+                            // Check if we have this token with positive shares
+                            let has_position = positions.iter()
+                                .any(|p| p.token_id == info.clob_token_id.as_ref() && p.net_shares > 0.0);
+                            if !has_position {
+                                return "SKIPPED_NO_POSITION".into();
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to check positions for SELL: {}", e);
+                            // Continue anyway - let the exchange reject if no position
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to open DB for position check: {}", e);
+                    // Continue anyway - let the exchange reject if no position
+                }
+            }
+        }
+        // If no db_path, we can't check positions - let the exchange handle it
+    }
 
     // Skip small trades using per-trader threshold from traders.json
     // Falls back to global MIN_WHALE_SHARES_TO_COPY if trader_min_shares is 0
@@ -1062,6 +1119,100 @@ fn parse_fill_details(status: &str) -> Option<(f64, f64, f64)> {
         }
     }
     None
+}
+
+/// Record an aggregated trade result to CSV and database
+/// This is called by the background aggregation flush task after executing trades
+async fn record_aggregated_trade(
+    evt: &ParsedEvent,
+    status: &str,
+    is_live: Option<bool>,
+    trade_tx: &Option<mpsc::UnboundedSender<TradeRecord>>,
+    trader_manager: &Arc<Mutex<TraderManager>>,
+    aggregation_count: usize,
+) {
+    // Parse status to extract execution details
+    let (our_shares_opt, our_price_opt, our_usd_opt, fill_pct_opt, trade_status_str) = parse_status_for_db(status);
+
+    // Determine TradeStatus enum from status string
+    let trade_status = if trade_status_str == "SUCCESS" {
+        if let Some(fill_pct) = fill_pct_opt {
+            if fill_pct >= 90.0 {
+                TradeStatus::Success
+            } else {
+                TradeStatus::Partial
+            }
+        } else {
+            TradeStatus::Success
+        }
+    } else if trade_status_str.starts_with("SKIPPED") {
+        TradeStatus::Skipped
+    } else {
+        TradeStatus::Failed
+    };
+
+    // Record trade in trader manager
+    let usd_amount = our_usd_opt.unwrap_or(0.0);
+    {
+        let mut manager = trader_manager.lock().await;
+        manager.record_trade(&evt.trader_address, usd_amount, trade_status);
+    }
+
+    // Record trade to database if persistence is enabled
+    if let Some(tx) = trade_tx {
+        let record = TradeRecord {
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            block_number: evt.block_number,
+            tx_hash: evt.tx_hash.clone(),
+            trader_address: evt.trader_address.clone(),
+            token_id: evt.order.clob_token_id.to_string(),
+            side: if evt.order.order_type.starts_with("BUY") { "BUY".to_string() } else { "SELL".to_string() },
+            whale_shares: evt.order.shares,
+            whale_price: evt.order.price_per_share,
+            whale_usd: evt.order.usd_value,
+            our_shares: our_shares_opt,
+            our_price: our_price_opt,
+            our_usd: our_usd_opt,
+            fill_pct: fill_pct_opt,
+            status: trade_status_str.clone(),
+            latency_ms: None,
+            is_live,
+            aggregation_count: Some(aggregation_count as u32),
+            aggregation_window_ms: None,
+        };
+
+        // Send to persistence worker (non-blocking)
+        let _ = tx.send(record);
+    }
+
+    // Write to CSV
+    let ts: DateTime<Utc> = Utc::now();
+    let is_live_bool = is_live.unwrap_or(false);
+
+    // Format status for CSV (include aggregation info)
+    let csv_status = if aggregation_count > 1 {
+        format!("AGG_FLUSH({}) {}", aggregation_count, status)
+    } else {
+        format!("AGG_BYPASS {}", status)
+    };
+
+    let row = CSV_BUF.with(|buf| {
+        SANITIZE_BUF.with(|sbuf| {
+            let mut b = buf.borrow_mut();
+            let mut sb = sbuf.borrow_mut();
+            sanitize_csv(&csv_status, &mut sb);
+            b.clear();
+            let _ = write!(b,
+                "{},{},{},{:.2},{:.6},{:.4},{},{},N/A,N/A,N/A,N/A,{},{}",
+                ts.format("%Y-%m-%d %H:%M:%S%.3f"),
+                evt.block_number, evt.order.clob_token_id, evt.order.usd_value,
+                evt.order.shares, evt.order.price_per_share, evt.order.order_type,
+                sb, evt.tx_hash, is_live_bool
+            );
+            b.clone()
+        })
+    });
+    let _ = tokio::task::spawn_blocking(move || append_csv_row(row)).await;
 }
 
 // ============================================================================
