@@ -120,23 +120,10 @@ fn get_addresses(args: &Args) -> Result<Vec<(String, String)>> {
         }
     }
 
-    // Priority 3: Try to load single trader from env
-    if let Ok(addr) = std::env::var("TARGET_WHALE_ADDRESS") {
+    // Priority 3: Try to load OUR wallet from FUNDER_ADDRESS (default behavior)
+    if let Ok(addr) = std::env::var("FUNDER_ADDRESS") {
         if !addr.trim().is_empty() {
-            return Ok(vec![(addr, "Whale".to_string())]);
-        }
-    }
-
-    // Priority 4: Try to load from TRADER_ADDRESSES
-    if let Ok(addresses) = std::env::var("TRADER_ADDRESSES") {
-        let addrs: Vec<(String, String)> = addresses
-            .split(',')
-            .filter(|s| !s.trim().is_empty())
-            .enumerate()
-            .map(|(i, addr)| (addr.trim().to_string(), format!("Trader{}", i + 1)))
-            .collect();
-        if !addrs.is_empty() {
-            return Ok(addrs);
+            return Ok(vec![(addr, "Our Wallet".to_string())]);
         }
     }
 
