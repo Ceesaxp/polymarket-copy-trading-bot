@@ -5,7 +5,10 @@
 //! with configurable thresholds for bypassing aggregation on large trades.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use crate::models::{OrderInfo, ParsedEvent};
 
 /// Configuration for trade aggregation behavior
 #[derive(Debug, Clone)]
@@ -100,6 +103,37 @@ pub struct AggregatedTrade {
 }
 
 impl AggregatedTrade {
+    /// Convert this aggregated trade into a ParsedEvent for order execution
+    ///
+    /// Creates a synthetic event with:
+    /// - block_number: 0 (synthetic)
+    /// - tx_hash: "AGG_{trade_count}_{token_id_prefix}"
+    /// - trader_address: first trader in the aggregation
+    /// - trader_label: "AGGREGATED"
+    /// - trader_min_shares: 0.0 (already passed threshold checks)
+    pub fn to_parsed_event(&self) -> ParsedEvent {
+        let token_id_prefix = if self.token_id.len() > 10 {
+            &self.token_id[..10]
+        } else {
+            &self.token_id
+        };
+
+        ParsedEvent {
+            block_number: 0,
+            tx_hash: format!("AGG_{}_{}", self.trade_count, token_id_prefix),
+            trader_address: self.traders.first().cloned().unwrap_or_default(),
+            trader_label: "AGGREGATED".to_string(),
+            trader_min_shares: 0.0, // Already passed min_shares checks
+            order: OrderInfo {
+                order_type: format!("{}_FILL", self.side),
+                clob_token_id: Arc::from(self.token_id.as_str()),
+                usd_value: self.total_usd,
+                shares: self.total_shares,
+                price_per_share: self.avg_price,
+            },
+        }
+    }
+
     /// Create an aggregated trade from a collection of pending trades
     pub fn from_trades(trades: Vec<PendingTrade>) -> Option<Self> {
         if trades.is_empty() {
@@ -716,5 +750,61 @@ mod tests {
         // Should be less than 100 microseconds (100,000 nanoseconds)
         println!("Average add_trade time: {}ns ({}us)", avg_per_call, avg_per_call / 1000);
         assert!(avg_per_call < 100_000, "add_trade took {}ns, expected < 100,000ns", avg_per_call);
+    }
+
+    #[test]
+    fn test_aggregated_trade_to_parsed_event() {
+        let trade1 = PendingTrade::new(
+            "0xabc123456789".to_string(),
+            "BUY".to_string(),
+            100.0,
+            0.40,
+            "0xtrader1".to_string(),
+        );
+
+        let trade2 = PendingTrade::new(
+            "0xabc123456789".to_string(),
+            "BUY".to_string(),
+            200.0,
+            0.50,
+            "0xtrader2".to_string(),
+        );
+
+        let aggregated = AggregatedTrade::from_trades(vec![trade1, trade2]).unwrap();
+        let event = aggregated.to_parsed_event();
+
+        // Verify event fields
+        assert_eq!(event.block_number, 0);
+        assert!(event.tx_hash.starts_with("AGG_2_"));
+        assert_eq!(event.trader_address, "0xtrader1"); // First trader
+        assert_eq!(event.trader_label, "AGGREGATED");
+        assert_eq!(event.trader_min_shares, 0.0);
+
+        // Verify order info
+        assert_eq!(event.order.order_type, "BUY_FILL");
+        assert_eq!(event.order.clob_token_id.as_ref(), "0xabc123456789");
+        assert_eq!(event.order.shares, 300.0);
+        // Weighted avg: (100*0.40 + 200*0.50) / 300 = 140/300 = 0.4666...
+        assert!((event.order.price_per_share - 0.4666666666666667).abs() < 0.0001);
+        assert_eq!(event.order.usd_value, 140.0);
+    }
+
+    #[test]
+    fn test_aggregated_trade_to_parsed_event_sell() {
+        let trade = PendingTrade::new(
+            "0xdef456".to_string(),
+            "SELL".to_string(),
+            500.0,
+            0.75,
+            "0xseller".to_string(),
+        );
+
+        let aggregated = AggregatedTrade::from_trades(vec![trade]).unwrap();
+        let event = aggregated.to_parsed_event();
+
+        assert_eq!(event.order.order_type, "SELL_FILL");
+        assert_eq!(event.order.shares, 500.0);
+        assert_eq!(event.order.price_per_share, 0.75);
+        assert_eq!(event.order.usd_value, 375.0);
     }
 }

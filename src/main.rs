@@ -19,8 +19,6 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-mod models;
-
 use pm_whale_follower::risk_guard::{RiskGuard, RiskGuardConfig, SafetyDecision, TradeSide, calc_liquidity_depth};
 use pm_whale_follower::settings::*;
 use pm_whale_follower::market_cache;
@@ -31,7 +29,7 @@ use pm_whale_follower::config::traders::TradersConfig;
 use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
 use pm_whale_follower::aggregator::{TradeAggregator, AggregationConfig};
 use pm_whale_follower::api::{ApiConfig, start_api_server};
-use models::*;
+use pm_whale_follower::models::*;
 use std::sync::Arc;
 
 const GAMMA_API_BASE: &str = "https://gamma-api.polymarket.com";
@@ -191,6 +189,7 @@ async fn main() -> Result<()> {
     // Spawn background flush task for aggregator (if enabled)
     if let Some(ref agg) = aggregator {
         let agg_clone = Arc::clone(agg);
+        let order_engine_clone = order_engine.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(100));
             loop {
@@ -205,14 +204,19 @@ async fn main() -> Result<()> {
                 // Execute each aggregated trade
                 for aggregated in expired {
                     let count = aggregated.trade_count;
+                    let token_id = aggregated.token_id.clone();
                     println!(
                         "[AGG] Window flush: {} trades combined into 1 order ({:.2} shares @ {:.4} avg)",
                         count, aggregated.total_shares, aggregated.avg_price
                     );
 
-                    // TODO: Execute aggregated trade through order engine
-                    // This will be implemented in Phase 3, Step 3.3
-                    // For now, just log that we would execute it
+                    // Get market liveness from cache (or None if not cached)
+                    let is_live = market_cache::get_is_live(&token_id);
+
+                    // Convert aggregated trade to event and execute
+                    let evt = aggregated.to_parsed_event();
+                    let status = order_engine_clone.submit(evt, is_live).await;
+                    println!("[AGG] Flush result: {}", status);
                 }
             }
         });
@@ -221,6 +225,7 @@ async fn main() -> Result<()> {
     // Spawn signal handler for graceful shutdown
     // Note: When the channel is dropped, the persistence worker will flush and exit
     let aggregator_shutdown = aggregator.clone();
+    let order_engine_shutdown = order_engine.clone();
     tokio::spawn(async move {
         if let Ok(()) = tokio::signal::ctrl_c().await {
             println!("\nReceived shutdown signal, shutting down...");
@@ -238,13 +243,21 @@ async fn main() -> Result<()> {
                         pending_aggregations.len()
                     );
 
-                    // TODO: Execute pending aggregations before exit (Phase 3, Step 3.3)
-                    // For now, just log what would be executed
+                    // Execute pending aggregations before exit
                     for aggregated in pending_aggregations {
+                        let token_id = aggregated.token_id.clone();
                         println!(
                             "[AGG] Shutdown flush: {} trades -> {:.2} shares @ {:.4} avg",
                             aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
                         );
+
+                        // Get market liveness from cache
+                        let is_live = market_cache::get_is_live(&token_id);
+
+                        // Execute the aggregated trade
+                        let evt = aggregated.to_parsed_event();
+                        let status = order_engine_shutdown.submit(evt, is_live).await;
+                        println!("[AGG] Shutdown result: {}", status);
                     }
                 }
             }
@@ -820,8 +833,9 @@ async fn handle_event(
                         aggregated.trade_count, aggregated.total_shares, aggregated.avg_price
                     );
                 }
-                // TODO: Execute the aggregated trade (Phase 3, Step 3.3)
-                order_engine.submit(evt.clone(), is_live).await
+                // Execute the aggregated trade with combined shares and avg price
+                let agg_evt = aggregated.to_parsed_event();
+                order_engine.submit(agg_evt, is_live).await
             }
             None => {
                 // Trade added to pending window
