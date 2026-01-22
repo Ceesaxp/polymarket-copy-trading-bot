@@ -110,8 +110,9 @@ pub fn get_gtd_expiry_secs(is_live: bool) -> u64 {
 // <4000: no chasing (0.00)
 #[inline]
 pub fn get_resubmit_max_buffer(whale_shares: f64) -> f64 {
-    if whale_shares >= 4000.0 { 0.01 }
-    else { 0.00 }
+    // All trades get 0.01 buffer to allow GTD to cross the spread
+    let _ = whale_shares; // unused now, kept for future tier-based logic
+    0.01
 }
 pub const BOOK_REQ_TIMEOUT: Duration = Duration::from_millis(2500);
 pub const WS_PING_TIMEOUT: Duration = Duration::from_secs(300);
@@ -481,7 +482,7 @@ mod tests {
 
         // Resubmit params for <1000: 4 attempts (50ms spaced), no chasing
         assert_eq!(get_max_resubmit_attempts(whale_shares), 4, "Small trades should get 4 resubmit attempts");
-        assert_eq!(get_resubmit_max_buffer(whale_shares), 0.00, "Small trades should have 0.00 max resubmit buffer");
+        assert_eq!(get_resubmit_max_buffer(whale_shares), 0.01, "All trades should have 0.01 max resubmit buffer");
     }
 
     // -------------------------------------------------------------------------
@@ -628,20 +629,20 @@ mod tests {
         // <4000 gets 4 attempts, 0.00 buffer (no chasing)
         assert_eq!(get_max_resubmit_attempts(3999.0), 4);
         assert_eq!(get_max_resubmit_attempts(2000.0), 4);
-        assert_eq!(get_resubmit_max_buffer(3999.0), 0.00);
-        assert_eq!(get_resubmit_max_buffer(2000.0), 0.00);
+        assert_eq!(get_resubmit_max_buffer(3999.0), 0.01);
+        assert_eq!(get_resubmit_max_buffer(2000.0), 0.01);
 
         // 1000-2000 gets 4 attempts, 0.00 buffer
         assert_eq!(get_max_resubmit_attempts(1999.0), 4);
         assert_eq!(get_max_resubmit_attempts(1000.0), 4);
-        assert_eq!(get_resubmit_max_buffer(1999.0), 0.00);
-        assert_eq!(get_resubmit_max_buffer(1000.0), 0.00);
+        assert_eq!(get_resubmit_max_buffer(1999.0), 0.01);
+        assert_eq!(get_resubmit_max_buffer(1000.0), 0.01);
 
         // <1000 gets 4 attempts, 0.00 buffer (no chasing)
         assert_eq!(get_max_resubmit_attempts(999.0), 4);
         assert_eq!(get_max_resubmit_attempts(100.0), 4);
-        assert_eq!(get_resubmit_max_buffer(999.0), 0.00);
-        assert_eq!(get_resubmit_max_buffer(100.0), 0.00);
+        assert_eq!(get_resubmit_max_buffer(999.0), 0.01);
+        assert_eq!(get_resubmit_max_buffer(100.0), 0.01);
     }
 
     // -------------------------------------------------------------------------
