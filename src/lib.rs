@@ -783,9 +783,9 @@ fn get_order_amounts_sell(
 ) -> Result<(i32, u128, u128)> {
     // For SELL: maker = shares we sell, taker = USDC we receive
     // FAK (market orders): USDC max 2 decimals, shares max 4 decimals
-    // GTD/GTC (limit orders): USDC max 6 decimals (full precision), shares max 2 decimals
-    // Note: GTD needs 6 decimals to match Polymarket's exact calculation for low prices
-    let usdc_decimals = if is_fak { 2 } else { 6 };
+    // GTD/GTC (limit orders): USDC max 4 decimals, shares max 2 decimals
+    // Note: SELL GTD needs 4 decimals for USDC (different from BUY GTD which needs 6)
+    let usdc_decimals = if is_fak { 2 } else { 4 };
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_maker = round_down(size, shares_decimals);
     let raw_taker = round_down(raw_maker * price, usdc_decimals);
