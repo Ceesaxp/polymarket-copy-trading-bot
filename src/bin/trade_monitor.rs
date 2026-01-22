@@ -130,12 +130,15 @@ async fn run_ws_loop(wss_url: &str) -> Result<()> {
     }).to_string();
     
     println!("🔌 Connected. Subscribing...");
+    println!("   Target address: {}", TARGET_TOPIC_HEX.as_str());
     ws.send(Message::Text(sub_payload)).await?;
 
     let http_client = reqwest::Client::builder().no_proxy().build()?;
 
     let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    let mut subscription_confirmed = false;
 
     loop {
         tokio::select! {
@@ -154,6 +157,22 @@ async fn run_ws_loop(wss_url: &str) -> Result<()> {
 
                 match msg_opt {
                     Message::Text(text) => {
+                        // Check for subscription confirmation
+                        if !subscription_confirmed {
+                            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                if v.get("id").and_then(|i| i.as_i64()) == Some(1) {
+                                    if let Some(result) = v.get("result") {
+                                        subscription_confirmed = true;
+                                        println!("✅ Subscription confirmed: {}", result);
+                                        println!("👀 Listening for your fills...");
+                                        continue;
+                                    } else if let Some(error) = v.get("error") {
+                                        return Err(anyhow!("Subscription failed: {}", error));
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(evt) = parse_event(&text) {
                             // Await inline for correctness - ensures CSV write completes
                             handle_event(evt, &http_client).await;
