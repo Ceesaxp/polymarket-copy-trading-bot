@@ -436,15 +436,29 @@ fn process_order(
     if my_shares == 0.0 {
         return format!("SKIPPED_PROBABILITY ({})", size_type);
     }
-    
+
+    // Calculate expiration for GTD orders (SELL orders always use GTD)
+    // FAK orders don't need expiration (use None)
+    let expiration = if order_action == "GTD" {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let expiry_secs = get_gtd_expiry_secs(is_live.unwrap_or(false));
+        let expiry_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + expiry_secs;
+        Some(expiry_timestamp.to_string())
+    } else {
+        None // FAK orders don't use expiration
+    };
+
     let args = OrderArgs {
-        token_id: info.clob_token_id.to_string(),  
+        token_id: info.clob_token_id.to_string(),
         price: limit_price,
-        size: (my_shares * 100.0).floor() / 100.0,  
+        size: (my_shares * 100.0).floor() / 100.0,
         side: if side_is_buy { "BUY".into() } else { "SELL".into() },
         fee_rate_bps: None,
         nonce: Some(0),
-        expiration: Some("0".into()),
+        expiration,
         taker: None,
         order_type: Some(order_action.to_string()),
     };
