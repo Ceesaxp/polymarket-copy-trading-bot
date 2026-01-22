@@ -9,6 +9,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use dotenvy::dotenv;
 use pm_whale_follower::config::traders::TradersConfig;
 use pm_whale_follower::live_positions::{
     fetch_live_positions_with_options, FetchOptions, LivePosition, LivePositionsSummary,
@@ -48,6 +49,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    dotenv().ok();
     let args = Args::parse();
 
     // Validate format
