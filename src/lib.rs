@@ -26,6 +26,7 @@ pub mod api;
 pub mod config;
 pub mod live_positions;
 pub mod market_cache;
+pub mod market_info;
 pub mod models;
 pub mod persistence;
 pub mod prices;
