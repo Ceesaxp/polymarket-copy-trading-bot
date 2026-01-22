@@ -768,7 +768,9 @@ fn get_order_amounts_buy(
     let usdc_decimals = if is_fak { 2 } else { 6 };
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_taker = round_down(size, shares_decimals);
-    let raw_maker = round_down(raw_taker * price, usdc_decimals);
+    // Use round_normal for USDC to avoid floating-point precision errors
+    // e.g., 43.55 * 0.73 = 31.79149999... should round to 31.7915, not 31.7914
+    let raw_maker = round_normal(raw_taker * price, usdc_decimals);
 
     Ok((
         0,
@@ -789,7 +791,9 @@ fn get_order_amounts_sell(
     let usdc_decimals = if is_fak { 2 } else { 4 };
     let shares_decimals = if is_fak { 4 } else { 2 };
     let raw_maker = round_down(size, shares_decimals);
-    let raw_taker = round_down(raw_maker * price, usdc_decimals);
+    // Use round_normal for USDC to avoid floating-point precision errors
+    // e.g., 43.55 * 0.73 = 31.79149999... should round to 31.7915, not 31.7914
+    let raw_taker = round_normal(raw_maker * price, usdc_decimals);
 
     Ok((
         1,
@@ -857,11 +861,11 @@ mod tests {
 
         // For a FAK buy order:
         // - taker amount = shares we receive = 108.68 (max 4 decimals)
-        // - maker amount = USDC we pay = 108.68 * 0.14 = 15.2152 -> 15.21 (FAK: max 2 decimals)
+        // - maker amount = USDC we pay = 108.68 * 0.14 = 15.2152 -> 15.22 (FAK: max 2 decimals, round_normal)
 
         assert_eq!(side, 0);
         assert_eq!(taker_amt, 108_680_000);
-        assert_eq!(maker_amt, 15_210_000); // FAK: 2 decimal USDC
+        assert_eq!(maker_amt, 15_220_000); // FAK: 2 decimal USDC (rounded)
     }
 
     #[test]
@@ -913,6 +917,32 @@ mod tests {
         assert_eq!(side, 1);
         assert_eq!(maker_amt, 116_880_000);
         assert_eq!(taker_amt, 52_596_000); // GTD: 4 decimal USDC (52.596)
+    }
+
+    #[test]
+    fn test_order_amounts_sell_gtd_floating_point_precision() {
+        // Test case that triggered floating-point precision error:
+        // 43.55 * 0.73 = 31.7915 mathematically, but IEEE 754 gives 31.79149999...
+        // Using round_down would give 31.7914, but API expects 31.7915
+        let (side, maker_amt, taker_amt) =
+            get_order_amounts_sell(43.55, 0.73, false).unwrap();
+
+        // 43.55 * 0.73 = 31.7915 (GTD: 4 decimal precision)
+        assert_eq!(side, 1);
+        assert_eq!(maker_amt, 43_550_000); // 43.55 shares
+        assert_eq!(taker_amt, 31_791_500); // 31.7915 USDC (NOT 31.7914!)
+    }
+
+    #[test]
+    fn test_order_amounts_buy_gtd_floating_point_precision() {
+        // Similar test for BUY side - ensure floating-point precision is handled
+        let (side, maker_amt, taker_amt) =
+            get_order_amounts_buy(43.55, 0.73, false).unwrap();
+
+        // 43.55 * 0.73 = 31.7915 (GTD: 6 decimal precision for BUY)
+        assert_eq!(side, 0);
+        assert_eq!(maker_amt, 31_791_500); // 31.7915 USDC
+        assert_eq!(taker_amt, 43_550_000); // 43.55 shares
     }
 }
 
