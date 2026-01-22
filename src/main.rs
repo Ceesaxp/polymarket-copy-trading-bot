@@ -1298,9 +1298,17 @@ async fn process_resubmit_chain(
                 }
             }
             Ok(Ok((false, body, filled_this_attempt))) if body.contains("FAK") && attempt < max_attempts => {
+                // FAK failed (no liquidity), retry with next attempt
+                let next_attempt = attempt + 1;
+                let next_is_last = next_attempt >= max_attempts;
+                let next_type = if next_is_last { "GTD" } else { "FAK" };
+                println!(
+                    "🔄 Resubmit chain: attempt {} FAK no match, trying {} @ {:.2} (attempt {})",
+                    attempt, next_type, new_price, next_attempt
+                );
                 req.cumulative_filled += filled_this_attempt;
                 req.failed_price = new_price;
-                req.attempt += 1;
+                req.attempt = next_attempt;
                 // Small trades get 50ms delay to let orderbook refresh
                 if req.whale_shares < 1000.0 {
                     tokio::time::sleep(Duration::from_millis(50)).await;
