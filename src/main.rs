@@ -1112,7 +1112,7 @@ async fn resubmit_worker(
 
         // Submit order: FAK for early attempts, GTD with expiry for last attempt
         let result = tokio::task::spawn_blocking(move || {
-            submit_resubmit_order_sync(&client_clone, &creds_clone, &token_id, new_price, size, is_live, is_last_attempt)
+            submit_resubmit_order_sync(&client_clone, &creds_clone, &token_id, new_price, size, is_live, is_last_attempt, max_price)
         }).await;
 
         match result {
@@ -1120,8 +1120,8 @@ async fn resubmit_worker(
                 if is_last_attempt {
                     // GTD order placed on book - we don't know fill amount yet
                     println!(
-                        "\x1b[32m🔄 Resubmit GTD SUBMITTED: attempt {} @ {:.2} | size {:.2} | prior filled {:.2}/{:.2}\x1b[0m",
-                        attempt, new_price, size, req.cumulative_filled, req.original_size
+                        "\x1b[32m🔄 Resubmit GTD SUBMITTED: attempt {} @ ≤{:.2} | size {:.2} | prior filled {:.2}/{:.2}\x1b[0m",
+                        attempt, max_price, size, req.cumulative_filled, req.original_size
                     );
                 } else {
                     // FAK order - check if partial fill
@@ -1256,10 +1256,11 @@ async fn process_resubmit_chain(
         let size = req.size;
         let attempt = req.attempt;
         let is_live = req.is_live;
+        let max_price = req.max_price;
 
         // Submit order: FAK for early attempts, GTD with expiry for last attempt
         let result = tokio::task::spawn_blocking(move || {
-            submit_resubmit_order_sync(&client_clone, &creds_clone, &token_id, new_price, size, is_live, is_last_attempt)
+            submit_resubmit_order_sync(&client_clone, &creds_clone, &token_id, new_price, size, is_live, is_last_attempt, max_price)
         }).await;
 
         match result {
@@ -1267,8 +1268,8 @@ async fn process_resubmit_chain(
                 if is_last_attempt {
                     // GTD order placed on book - we don't know fill amount yet
                     println!(
-                        "\x1b[32m🔄 Resubmit chain GTD SUBMITTED: attempt {} @ {:.2} | size {:.2} | prior filled {:.2}/{:.2}\x1b[0m",
-                        attempt, new_price, req.size, req.cumulative_filled, req.original_size
+                        "\x1b[32m🔄 Resubmit chain GTD SUBMITTED: attempt {} @ ≤{:.2} | size {:.2} | prior filled {:.2}/{:.2}\x1b[0m",
+                        attempt, req.max_price, req.size, req.cumulative_filled, req.original_size
                     );
                     return;
                 } else {
@@ -1360,26 +1361,42 @@ fn submit_resubmit_order_sync(
     size: f64,
     is_live: bool,
     is_last_attempt: bool,
+    max_price: f64,
 ) -> anyhow::Result<(bool, String, f64)> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let mut client = client.clone();
 
     // Only use GTD with expiry on the LAST attempt; earlier attempts use FAK
-    let (expiration, order_type) = if is_last_attempt {
+    let (expiration, order_type, final_price) = if is_last_attempt {
         let expiry_secs = get_gtd_expiry_secs(is_live);
         let expiry_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() + expiry_secs;
-        (Some(expiry_timestamp.to_string()), "GTD")
+
+        // For GTD, try to cross the spread by using min(max_price, best_ask)
+        let gtd_price = fetch_best_ask_sync(token_id)
+            .map(|best_ask| {
+                let crossed_price = best_ask.min(max_price);
+                if crossed_price > price {
+                    println!(
+                        "🔄 GTD crossing spread: {:.2} -> {:.2} (best_ask={:.2}, max={:.2})",
+                        price, crossed_price, best_ask, max_price
+                    );
+                }
+                crossed_price
+            })
+            .unwrap_or(price); // Fall back to original price if book fetch fails
+
+        (Some(expiry_timestamp.to_string()), "GTD", gtd_price)
     } else {
-        (None, "FAK")
+        (None, "FAK", price)
     };
 
     // Round to micro-units (6 decimals) then back to avoid floating-point truncation issues
     // e.g., 40.80 stored as 40.7999999... would truncate to 40799999 instead of 40800000
-    let price_micro = (price * 1_000_000.0).round() as i64;
+    let price_micro = (final_price * 1_000_000.0).round() as i64;
     let size_micro = (size * 1_000_000.0).round() as i64;
     let rounded_price = price_micro as f64 / 1_000_000.0;
     let rounded_size = size_micro as f64 / 1_000_000.0;
@@ -1416,6 +1433,31 @@ fn submit_resubmit_order_sync(
     };
 
     Ok((status.is_success(), body_text, filled_shares))
+}
+
+/// Fetch the best ask price from the order book (blocking/sync version)
+/// Returns None if the book fetch fails or no asks are available
+fn fetch_best_ask_sync(token_id: &str) -> Option<f64> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+
+    let url = format!("{}/book?token_id={}", CLOB_API_BASE, token_id);
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let val: Value = resp.json().ok()?;
+    let asks = val.get("asks")?.as_array()?;
+
+    // Find the best (lowest) ask price
+    asks.iter()
+        .filter_map(|entry| {
+            entry.get("price")?.as_str()?.parse::<f64>().ok()
+        })
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 async fn fetch_is_live(token_id: &str, client: &reqwest::Client) -> Option<bool> {
