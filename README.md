@@ -159,6 +159,7 @@ See [Features Overview](docs/04_FEATURES.md) for feature details and [Strategy G
 - ✅ Per-trader configuration (scaling ratios, thresholds)
 - ✅ Per-trader statistics tracking
 - ✅ Trader comparison tools
+- ✅ Hot reload configuration (SIGHUP or API)
 
 ### Persistence & Analytics
 - ✅ SQLite database for all trades
@@ -168,6 +169,9 @@ See [Features Overview](docs/04_FEATURES.md) for feature details and [Strategy G
 - ✅ Daily P&L tracking
 - ✅ HTTP API for data export
 - ✅ JSON output for automation
+- ✅ Complete CLOB trade history with PnL calculations
+- ✅ Activity tracking (trades, merges, redemptions)
+- ✅ Position reconciliation (CLOB vs API)
 
 ## 7. Advanced Usage
 
@@ -198,6 +202,15 @@ cargo run --release --bin trade_history
 cargo run --release --bin trade_history -- --trader whale1    # Filter by trader
 cargo run --release --bin trade_history -- --since 1704067200 # Since timestamp
 cargo run --release --bin trade_history -- --format json      # JSON/CSV output
+cargo run --release --bin trade_history -- --refresh          # Enrich with live market data
+
+# Complete CLOB trade history with PnL and reconciliation
+cargo run --release --bin clob_history                        # Show positions with PnL
+cargo run --release --bin clob_history -- --trades            # Show individual trades
+cargo run --release --bin clob_history -- --reconcile         # Compare CLOB vs Position API
+cargo run --release --bin clob_history -- --activities        # Show all activities (TRADE/MERGE/REDEEM)
+cargo run --release --bin clob_history -- --activities --activity-type merge  # Filter by type
+cargo run --release --bin clob_history -- --format json       # JSON/CSV output
 
 # Compare performance across traders
 cargo run --release --bin trader_comparison
@@ -224,6 +237,12 @@ cargo run --release --bin debug_signing
 
 # Import legacy CSV data into SQLite database
 cargo run --release --bin import_csv <csv_file> [--db <db_path>] [--dry-run]
+
+# Auto-claim winning positions from resolved markets (requires Builder credentials)
+cargo run --release --bin auto_claim                    # Dry run - show redeemable
+cargo run --release --bin auto_claim -- --execute       # Actually redeem
+cargo run --release --bin auto_claim -- --execute --batch  # Batch into single TX
+cargo run --release --bin auto_claim -- --min-value 5   # Only redeem >= $5
 ```
 
 ### 7.4 Research Tools (Python)
@@ -301,7 +320,7 @@ cargo build --release
 This bot is provided as-is. Trading involves financial risk. Use at your own discretion. Test thoroughly before using real funds. The authors are not responsible for any losses.
 
 ## 📄 Contact
-For questions or issues, contact via Telegram: [@terauss](https://t.me/terauss)
+For questions or issues -- add an issue via GitHub
 
 
 

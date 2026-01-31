@@ -7,13 +7,14 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::config::reloadable::ReloadableTraders;
 use crate::persistence::{TradeStore, TradeRecord};
 
 /// API server configuration
@@ -37,6 +38,8 @@ impl Default for ApiConfig {
 struct AppState {
     db_path: Option<String>,
     start_time: Instant,
+    /// Optional reloadable traders config for the /reload endpoint
+    traders: Option<ReloadableTraders>,
 }
 
 /// Health check response
@@ -282,6 +285,58 @@ async fn stats_handler(State(state): State<Arc<AppState>>) -> axum::response::Re
     }
 }
 
+/// Reload response
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct ReloadResponse {
+    success: bool,
+    changed: bool,
+    message: String,
+}
+
+/// Reload endpoint
+/// Reloads trader configuration from traders.json or environment variables
+async fn reload_handler(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let traders = match &state.traders {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ReloadResponse {
+                    success: false,
+                    changed: false,
+                    message: "Reload not available (traders config not set)".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match traders.reload().await {
+        Ok(changed) => {
+            let message = if changed {
+                "Configuration reloaded successfully. WebSocket will reconnect with new traders."
+            } else {
+                "Configuration unchanged."
+            };
+            Json(ReloadResponse {
+                success: true,
+                changed,
+                message: message.to_string(),
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ReloadResponse {
+                success: false,
+                changed: false,
+                message: format!("Failed to reload configuration: {}", e),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 /// Creates the API router with all endpoints
 fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -289,6 +344,7 @@ fn create_router(state: Arc<AppState>) -> Router {
         .route("/positions", get(positions_handler))
         .route("/trades", get(trades_handler))
         .route("/stats", get(stats_handler))
+        .route("/reload", post(reload_handler))
         .with_state(state)
 }
 
@@ -298,6 +354,16 @@ pub async fn start_api_server(
     config: ApiConfig,
     db_path: Option<String>,
 ) -> Result<tokio::task::JoinHandle<()>, Box<dyn std::error::Error + Send + Sync>> {
+    start_api_server_with_reload(config, db_path, None).await
+}
+
+/// Starts the HTTP API server with optional reload support
+/// Returns a JoinHandle that can be awaited for graceful shutdown
+pub async fn start_api_server_with_reload(
+    config: ApiConfig,
+    db_path: Option<String>,
+    traders: Option<ReloadableTraders>,
+) -> Result<tokio::task::JoinHandle<()>, Box<dyn std::error::Error + Send + Sync>> {
     if !config.enabled {
         return Err("API is disabled".into());
     }
@@ -305,6 +371,7 @@ pub async fn start_api_server(
     let state = Arc::new(AppState {
         db_path,
         start_time: Instant::now(),
+        traders,
     });
 
     let app = create_router(state);

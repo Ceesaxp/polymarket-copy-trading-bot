@@ -26,9 +26,10 @@ use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
 use pm_whale_follower::persistence::{TradeStore, TradeRecord};
 use pm_whale_follower::config::traders::TradersConfig;
+use pm_whale_follower::config::reloadable::ReloadableTraders;
 use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
 use pm_whale_follower::aggregator::{TradeAggregator, AggregationConfig};
-use pm_whale_follower::api::{ApiConfig, start_api_server};
+use pm_whale_follower::api::{ApiConfig, start_api_server_with_reload};
 use pm_whale_follower::models::*;
 use std::sync::Arc;
 
@@ -92,6 +93,10 @@ async fn main() -> Result<()> {
 
     let cfg = Config::from_env()?;
 
+    // Create reloadable traders config for hot-reload support
+    let reloadable_traders = ReloadableTraders::new(cfg.traders.clone());
+    let mut config_change_rx = reloadable_traders.subscribe();
+
     // Initialize trader state manager
     let trader_manager = Arc::new(Mutex::new(TraderManager::new(&cfg.traders)));
     println!("Trader state manager initialized for {} traders", cfg.traders.len());
@@ -141,13 +146,14 @@ async fn main() -> Result<()> {
         };
         let api_db_path = stats_persist_path.clone();
 
-        match start_api_server(api_config, api_db_path).await {
+        match start_api_server_with_reload(api_config, api_db_path, Some(reloadable_traders.clone())).await {
             Ok(_handle) => {
                 println!("HTTP API server started on http://127.0.0.1:{}", cfg.api_port);
                 println!("  - GET /health - Health check");
                 println!("  - GET /positions - Current positions");
                 println!("  - GET /trades?limit=N&since=TS - Trade history");
                 println!("  - GET /stats - Aggregation statistics");
+                println!("  - POST /reload - Reload trader configuration");
             }
             Err(e) => {
                 eprintln!("Warning: Failed to start API server: {}", e);
@@ -234,6 +240,32 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn SIGHUP handler for configuration reload (Unix only)
+    #[cfg(unix)]
+    {
+        let reloadable_traders_sighup = reloadable_traders.clone();
+        tokio::spawn(async move {
+            let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("Failed to register SIGHUP handler");
+            loop {
+                sighup.recv().await;
+                println!("\n🔄 Received SIGHUP, reloading trader configuration...");
+                match reloadable_traders_sighup.reload().await {
+                    Ok(true) => {
+                        println!("✅ Configuration reloaded. WebSocket will reconnect with new traders.");
+                    }
+                    Ok(false) => {
+                        println!("ℹ️ Configuration unchanged.");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to reload configuration: {}", e);
+                    }
+                }
+            }
+        });
+        println!("SIGHUP handler registered (kill -HUP {} to reload config)", std::process::id());
+    }
+
     // Spawn signal handler for graceful shutdown
     // Note: When the channel is dropped, the persistence worker will flush and exit
     let aggregator_shutdown = aggregator.clone();
@@ -292,8 +324,16 @@ async fn main() -> Result<()> {
     });
 
     loop {
-        if let Err(e) = run_ws_loop(&cfg, &order_engine, trade_tx.clone(), Arc::clone(&trader_manager), stats_persist_path.clone(), aggregator.clone()).await {
-            eprintln!("⚠️ WS error: {e}. Reconnecting...");
+        // Check if config changed before connecting
+        let current_gen = reloadable_traders.generation();
+
+        if let Err(e) = run_ws_loop(&cfg, &reloadable_traders, &order_engine, trade_tx.clone(), Arc::clone(&trader_manager), stats_persist_path.clone(), aggregator.clone(), &mut config_change_rx).await {
+            // Check if error was due to config reload
+            if reloadable_traders.generation() != current_gen {
+                println!("🔄 Config changed, reconnecting with new traders...");
+            } else {
+                eprintln!("⚠️ WS error: {e}. Reconnecting...");
+            }
             tokio::time::sleep(WS_RECONNECT_DELAY).await;
         }
     }
@@ -745,20 +785,23 @@ fn build_subscription_message(topic_filter: Vec<String>) -> String {
 
 async fn run_ws_loop(
     cfg: &Config,
+    reloadable_traders: &ReloadableTraders,
     order_engine: &OrderEngine,
     trade_tx: Option<mpsc::UnboundedSender<TradeRecord>>,
     trader_manager: Arc<Mutex<TraderManager>>,
     stats_persist_path: Option<String>,
     aggregator: Option<Arc<Mutex<TradeAggregator>>>,
+    config_change_rx: &mut tokio::sync::watch::Receiver<u64>,
 ) -> Result<()> {
     let (mut ws, _) = connect_async(&cfg.wss_url).await?;
 
     // Build topic filter from traders config
-    let topic_filter = cfg.traders.build_topic_filter();
+    let traders_config = reloadable_traders.read().await;
+    let topic_filter = traders_config.build_topic_filter();
     let sub = build_subscription_message(topic_filter.clone());
 
     // Log trader monitoring info with topic details for debugging
-    let trader_count = cfg.traders.iter().filter(|t| t.enabled).count();
+    let trader_count = traders_config.iter().filter(|t| t.enabled).count();
     if topic_filter.len() > 10 {
         println!("🔌 Connected. Subscribing to {} traders (client-side filtering)...", trader_count);
     } else {
@@ -769,6 +812,7 @@ async fn run_ws_loop(
     for (i, topic) in topic_filter.iter().enumerate() {
         println!("   📍 Trader {}: {}", i + 1, topic);
     }
+    drop(traders_config); // Release the read lock
 
     ws.send(Message::Text(sub)).await?;
 
@@ -777,7 +821,17 @@ async fn run_ws_loop(
     let mut last_heartbeat = std::time::Instant::now();
     let heartbeat_interval = Duration::from_secs(60);
 
+    // Get a snapshot of traders config for parsing events in this loop iteration
+    // When config changes, we'll exit and reconnect with the new config
+    let traders_snapshot = reloadable_traders.read().await.clone();
+
     loop {
+        // Check for config changes - if changed, exit loop to reconnect
+        if config_change_rx.has_changed().unwrap_or(false) {
+            let _ = config_change_rx.borrow_and_update(); // Clear the changed flag
+            return Err(anyhow!("Config changed, reconnecting"));
+        }
+
         let msg = tokio::time::timeout(WS_PING_TIMEOUT, ws.next()).await
             .map_err(|_| anyhow!("WS timeout"))?
             .ok_or_else(|| anyhow!("WS closed"))??;
@@ -794,7 +848,7 @@ async fn run_ws_loop(
                     }
                 }
 
-                if let Some(evt) = parse_event(text, Some(&cfg.traders)) {
+                if let Some(evt) = parse_event(text, Some(&traders_snapshot)) {
                     let engine = order_engine.clone();
                     let client = http_client.clone();
                     let tx = trade_tx.clone();
@@ -805,7 +859,7 @@ async fn run_ws_loop(
             }
             Message::Binary(bin) => {
                 if let Ok(text) = String::from_utf8(bin) {
-                    if let Some(evt) = parse_event(text, Some(&cfg.traders)) {
+                    if let Some(evt) = parse_event(text, Some(&traders_snapshot)) {
                         let engine = order_engine.clone();
                         let client = http_client.clone();
                         let tx = trade_tx.clone();

@@ -176,6 +176,14 @@ impl TradersConfig {
         }
     }
 
+    /// Reloads trader configuration from the same sources as load()
+    /// Returns the new config and a bool indicating if it changed
+    pub fn reload(&self) -> Result<(Self, bool), String> {
+        let new_config = Self::load()?;
+        let changed = self.build_topic_filter() != new_config.build_topic_filter();
+        Ok((new_config, changed))
+    }
+
     /// Returns the number of configured traders
     pub fn len(&self) -> usize {
         self.traders.len()

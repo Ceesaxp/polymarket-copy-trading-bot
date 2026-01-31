@@ -2,6 +2,7 @@
 /// Handles loading and validating trader addresses for multi-trader monitoring
 
 pub mod traders;
+pub mod reloadable;
 
 #[cfg(test)]
 mod tests {

@@ -10,12 +10,15 @@ This document explains what the Polymarket Copy Trading Bot does and how it work
 4. [Trade Aggregation](#4-trade-aggregation)
 5. [Persistence & Analytics](#5-persistence--analytics)
 6. [Live P&L Tracking](#6-live-pl-tracking)
-7. [Trading Flow](#7-trading-flow-step-by-step)
-8. [Performance Characteristics](#8-performance-characteristics)
-9. [Limitations](#9-limitations)
-10. [Safety Features](#10-safety-features-summary)
-11. [Understanding Output](#11-understanding-the-output)
-12. [Next Steps](#12-next-steps)
+7. [Hot Configuration Reload](#7-hot-configuration-reload)
+8. [CLOB Trade History Tool](#8-clob-trade-history-tool)
+9. [Auto-Claim (Redemption)](#9-auto-claim-redemption)
+10. [Trading Flow](#10-trading-flow-step-by-step)
+11. [Performance Characteristics](#11-performance-characteristics)
+12. [Limitations](#12-limitations)
+13. [Safety Features](#13-safety-features-summary)
+14. [Understanding Output](#14-understanding-the-output)
+15. [Next Steps](#15-next-steps)
 
 ## 1. Overview
 
@@ -394,6 +397,7 @@ curl http://127.0.0.1:8080/health     # Bot status
 curl http://127.0.0.1:8080/positions  # Current positions
 curl http://127.0.0.1:8080/trades     # Recent trades
 curl http://127.0.0.1:8080/stats      # Statistics
+curl -X POST http://127.0.0.1:8080/reload  # Reload trader config (see Section 7)
 ```
 
 ### 5.5 CSV Import
@@ -474,7 +478,255 @@ Returns complete portfolio data in JSON format for automation and integration.
 
 ---
 
-## 7. Trading Flow (Step-by-Step)
+## 7. Hot Configuration Reload
+
+### 7.1 Overview
+
+Reload trader configuration without restarting the bot. This allows you to add/remove traders, change scaling ratios, or update thresholds on the fly.
+
+### 7.2 Methods
+
+**Method 1: SIGHUP Signal (Unix/Linux/macOS)**
+
+Send the SIGHUP signal to the running bot process:
+
+```bash
+# Find the bot's process ID
+pgrep -f pm_whale_follower
+
+# Send SIGHUP to reload configuration
+kill -HUP <pid>
+
+# Or in one command
+pkill -HUP -f pm_whale_follower
+```
+
+**Method 2: HTTP API Endpoint**
+
+When `API_ENABLED=true`, use the `/reload` endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8080/reload
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "changed": true,
+  "message": "Configuration reloaded successfully. Trader filter updated.",
+  "trader_count": 3
+}
+```
+
+### 7.3 What Gets Reloaded
+
+- Trader addresses and labels
+- Per-trader scaling ratios
+- Per-trader minimum share thresholds
+- WebSocket subscription filter (automatically updated)
+
+### 7.4 What Does NOT Get Reloaded
+
+- Environment variables (`.env` file)
+- Circuit breaker settings
+- API port/host settings
+
+---
+
+## 8. CLOB Trade History Tool
+
+### 8.1 Overview
+
+The `clob_history` tool provides complete trade history from the Polymarket CLOB API with accurate PnL calculations, activity tracking, and position reconciliation.
+
+**Key Features:**
+- Full trade history from CLOB API (authenticated)
+- Activity tracking (trades, merges, redemptions)
+- Realized and unrealized PnL calculations
+- Position reconciliation with Position API
+- Multiple output formats (table, JSON, CSV)
+
+### 8.2 Basic Usage
+
+```bash
+# Show all positions with PnL (default view)
+cargo run --bin clob_history
+
+# Show individual trades
+cargo run --bin clob_history -- --trades
+
+# Filter by market title
+cargo run --bin clob_history -- --title "Trump"
+
+# Output as JSON
+cargo run --bin clob_history -- --format json
+
+# Sort by PnL instead of value
+cargo run --bin clob_history -- --sort pnl
+```
+
+### 8.3 Reconciliation Mode
+
+Compare CLOB trade data with Position API to find discrepancies:
+
+```bash
+cargo run --bin clob_history -- --reconcile
+```
+
+**Output columns:**
+| Column | Description |
+|--------|-------------|
+| API | Current shares from Position API |
+| Trades | Net shares from CLOB trades (buys - sells) |
+| Merge | Shares added via token merging |
+| Redeem | Shares removed via redemption |
+| Unexplained | Shares that can't be explained |
+| Status | ✓ (reconciled), ? (more than expected), ! (less than expected) |
+
+**Example output:**
+```
+=== RECONCILIATION ===
+
+  Shares from Trades:  2741.08
+  Shares from Merges:  +6.73
+  Shares Redeemed:     -1095.53
+
+  ✓ All positions fully reconciled!
+```
+
+### 8.4 Activity Mode
+
+View all wallet activities including trades, merges, and redemptions:
+
+```bash
+# Show all activities
+cargo run --bin clob_history -- --activities
+
+# Filter by activity type
+cargo run --bin clob_history -- --activities --activity-type merge
+cargo run --bin clob_history -- --activities --activity-type redeem
+cargo run --bin clob_history -- --activities --activity-type trade
+
+# Combine with title filter
+cargo run --bin clob_history -- --activities --title "Chelsea"
+```
+
+**Activity Types:**
+| Type | Description |
+|------|-------------|
+| TRADE | Regular buy/sell trades |
+| MERGE | Token merging (combining Yes+No → USDC) |
+| REDEEM | Market resolution redemptions |
+
+### 8.5 All Options
+
+```bash
+cargo run --bin clob_history -- --help
+```
+
+| Option | Description |
+|--------|-------------|
+| `--trades` | Show individual trades instead of positions |
+| `--activities` | Show all activities (TRADE, MERGE, REDEEM) |
+| `--activity-type <TYPE>` | Filter activities by type (trade, merge, redeem) |
+| `--reconcile` | Compare CLOB data with Position API |
+| `--market <ID>` | Filter by market/condition ID |
+| `--title <TEXT>` | Filter by title (case-insensitive) |
+| `--format <FMT>` | Output format: table, json, csv |
+| `--sort <FIELD>` | Sort by: pnl, value, shares, trades |
+| `--limit <N>` | Limit number of results |
+| `--unexplained-only` | Show only positions with unexplained shares |
+
+### 8.6 PnL Calculation
+
+**Realized PnL:**
+```
+Revenue from sells - Cost basis of sold shares
+```
+
+**Unrealized PnL:**
+```
+(Current price - Avg buy price) × Net shares held
+```
+
+**Total PnL:**
+```
+Realized PnL + Unrealized PnL
+```
+
+### 8.7 Data Sources
+
+| Data | Source | Authentication |
+|------|--------|----------------|
+| Trade history | CLOB API (`/trades`) | L2 HMAC auth required |
+| Current positions | Data API (`/positions`) | Public (no auth) |
+| Activities | Data API (`/activity`) | Public (no auth) |
+
+---
+
+## 9. Auto-Claim (Redemption)
+
+### 9.1 Overview
+
+Automatically claim winning positions from resolved Polymarket markets. Uses the Polymarket Builder Relayer for gasless transactions.
+
+**Requirements:**
+- Builder credentials (apply at [Polymarket Builder Program](https://docs.polymarket.com/developers/builders))
+- Set `POLY_BUILDER_API_KEY`, `POLY_BUILDER_SECRET`, `POLY_BUILDER_PASSPHRASE` in `.env`
+
+### 9.2 Usage
+
+```bash
+# Dry run - show what would be redeemed
+cargo run --bin auto_claim
+
+# Actually execute redemptions
+cargo run --bin auto_claim -- --execute
+
+# Batch all redemptions into a single transaction (saves gas for Polymarket)
+cargo run --bin auto_claim -- --execute --batch
+
+# Wait for transaction confirmation
+cargo run --bin auto_claim -- --execute --wait
+
+# Only redeem positions worth at least $5
+cargo run --bin auto_claim -- --execute --min-value 5
+
+# Filter by market title
+cargo run --bin auto_claim -- --title "Trump"
+```
+
+### 9.3 How It Works
+
+1. Fetches all positions from Data API
+2. Filters for `redeemable: true` positions with positive value
+3. Builds redemption transactions for the CTF contract
+4. Sends transactions through the Builder Relayer (gasless)
+5. Optionally waits for on-chain confirmation
+
+### 9.4 Options
+
+| Option | Description |
+|--------|-------------|
+| `--execute` | Actually execute (default is dry run) |
+| `--batch` | Combine all redemptions into one TX |
+| `--wait` | Wait for transaction confirmation |
+| `--min-value <USD>` | Minimum value to redeem (default: 0.01) |
+| `--title <TEXT>` | Filter by market title |
+| `--limit <N>` | Maximum positions to redeem |
+
+### 9.5 Transaction Flow
+
+```
+Your Wallet → Builder Relayer → Safe Wallet → CTF Contract → USDC to Wallet
+                    ↓
+           (Polymarket pays gas)
+```
+
+---
+
+## 10. Trading Flow (Step-by-Step)
 
 This is a simplified overview. For complete detailed logic, see [Strategy Guide](05_STRATEGY.md).
 
@@ -516,7 +768,7 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 
 ---
 
-## 8. Performance Characteristics
+## 11. Performance Characteristics
 
 **Latency:**
 - Event detection: <1 second (blockchain dependent)
@@ -536,7 +788,7 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 
 ---
 
-## 9. Limitations
+## 12. Limitations
 
 **What the bot does NOT do:**
 - ❌ Market analysis or prediction
@@ -553,10 +805,11 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 - ✅ Position monitoring with live P&L (see Section 6)
 - ✅ Portfolio summary and daily tracking
 - ✅ Multiple whale copying (see Section 3)
+- ✅ Complete trade history with reconciliation (see Section 8)
 
 ---
 
-## 10. Safety Features Summary
+## 13. Safety Features Summary
 
 ✅ Scaled position sizes (2% default)
 ✅ Circuit breakers for dangerous conditions
@@ -566,11 +819,11 @@ This is a simplified overview. For complete detailed logic, see [Strategy Guide]
 ✅ Comprehensive error handling
 ✅ Mock trading mode for testing
 ✅ Extensive logging for audit
-✅ SELL order position check (skips if no shares held)  
+✅ SELL order position check (skips if no shares held)
 
 ---
 
-## 11. Understanding the Output
+## 14. Understanding the Output
 
 **Console Messages:**
 
@@ -595,7 +848,7 @@ All trades are logged with: timestamp, block, token_id, usd_value, shares, price
 
 ---
 
-## 12. Next Steps
+## 15. Next Steps
 
 - Read [Configuration Guide](03_CONFIGURATION.md) to adjust settings
 - Review [Trading Strategy Guide](05_STRATEGY.md) for detailed strategy logic
