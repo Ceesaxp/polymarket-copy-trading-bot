@@ -42,10 +42,11 @@ pub struct WorkItem {
     pub is_live: Option<bool>,
 }
 
-/// Size calculation result 
+/// Size calculation result
 #[derive(Debug, Clone, Copy)]
 pub enum SizeType {
     Scaled,
+    Capped,        // Size was capped by portfolio-based bet limit
     ProbHit(u8),   // percentage
     ProbSkip(u8),  // percentage
 }
@@ -71,6 +72,7 @@ impl fmt::Display for SizeType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SizeType::Scaled => f.write_str("SCALED"),
+            SizeType::Capped => f.write_str("CAPPED"),
             SizeType::ProbHit(pct) => write!(f, "PROB_HIT ({}%)", pct),
             SizeType::ProbSkip(pct) => write!(f, "PROB_SKIP ({}%)", pct),
         }

@@ -25,6 +25,7 @@ use pm_whale_follower::market_cache;
 use pm_whale_follower::tennis_markets;
 use pm_whale_follower::soccer_markets;
 use pm_whale_follower::persistence::{TradeStore, TradeRecord};
+use pm_whale_follower::portfolio::{PortfolioTracker, PortfolioConfig};
 use pm_whale_follower::config::traders::TradersConfig;
 use pm_whale_follower::config::reloadable::ReloadableTraders;
 use pm_whale_follower::trader_state::{TraderManager, TradeStatus};
@@ -167,9 +168,24 @@ async fn main() -> Result<()> {
         ".clob_market_cache.json",
         ".clob_creds.json",
     ).await?;
-    
+
     let prepared_creds = PreparedCreds::from_api_creds(&creds)?;
     let risk_config = cfg.risk_guard_config();
+
+    // Initialize portfolio tracker for dynamic bet sizing (if configured)
+    let portfolio_tracker = cfg.max_bet_portfolio_percent.map(|percent| {
+        let portfolio_config = PortfolioConfig {
+            wallet_address: cfg.wallet_address.clone(),
+            cache_duration_secs: cfg.portfolio_cache_secs,
+            max_bet_portfolio_percent: Some(percent),
+        };
+        let tracker = PortfolioTracker::new(portfolio_config);
+        println!(
+            "Portfolio-based bet limit enabled: {:.1}% of portfolio, cache: {}s",
+            percent * 100.0, cfg.portfolio_cache_secs
+        );
+        Arc::new(tracker)
+    });
 
     let (order_tx, order_rx) = mpsc::channel(1024);
     let (resubmit_tx, resubmit_rx) = mpsc::unbounded_channel::<ResubmitRequest>();
@@ -177,7 +193,7 @@ async fn main() -> Result<()> {
     let client_arc = Arc::new(client);
     let creds_arc = Arc::new(prepared_creds.clone());
 
-    start_order_worker(order_rx, client_arc.clone(), prepared_creds, cfg.enable_trading, cfg.mock_trading, risk_config, resubmit_tx.clone(), stats_persist_path.clone());
+    start_order_worker(order_rx, client_arc.clone(), prepared_creds, cfg.enable_trading, cfg.mock_trading, risk_config, resubmit_tx.clone(), stats_persist_path.clone(), portfolio_tracker);
 
     tokio::spawn(resubmit_worker(resubmit_rx, client_arc, creds_arc));
 
@@ -382,10 +398,11 @@ fn start_order_worker(
     risk_config: RiskGuardConfig,
     resubmit_tx: mpsc::UnboundedSender<ResubmitRequest>,
     db_path: Option<String>,
+    portfolio_tracker: Option<Arc<PortfolioTracker>>,
 ) {
     std::thread::spawn(move || {
         let mut guard = RiskGuard::new(risk_config);
-        order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx, db_path.as_deref());
+        order_worker(rx, client, creds, enable_trading, mock_trading, &mut guard, resubmit_tx, db_path.as_deref(), portfolio_tracker);
     });
 }
 
@@ -431,10 +448,11 @@ fn order_worker(
     guard: &mut RiskGuard,
     resubmit_tx: mpsc::UnboundedSender<ResubmitRequest>,
     db_path: Option<&str>,
+    portfolio_tracker: Option<Arc<PortfolioTracker>>,
 ) {
     let mut client_mut = (*client).clone();
     while let Some(work) = rx.blocking_recv() {
-        let status = process_order(&work.event.order, work.event.trader_min_shares, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live, db_path);
+        let status = process_order(&work.event.order, work.event.trader_min_shares, &mut client_mut, &creds, enable_trading, mock_trading, guard, &resubmit_tx, work.is_live, db_path, portfolio_tracker.as_ref());
         let _ = work.respond_to.send(status);
     }
 }
@@ -454,6 +472,7 @@ fn process_order(
     resubmit_tx: &mpsc::UnboundedSender<ResubmitRequest>,
     is_live: Option<bool>,
     db_path: Option<&str>,
+    portfolio_tracker: Option<&Arc<PortfolioTracker>>,
 ) -> String {
     if !enable_trading { return "SKIPPED_DISABLED".into(); }
     if mock_trading { return "MOCK_ONLY".into(); }
@@ -529,7 +548,11 @@ fn process_order(
         (whale_price - buffer).max(0.01)
     };
 
-    let (my_shares, size_type) = calculate_safe_size(whale_shares, limit_price, size_multiplier);
+    // Calculate max bet in shares based on portfolio value (if configured)
+    let max_bet_shares = portfolio_tracker
+        .and_then(|tracker| tracker.get_max_bet_shares(limit_price));
+
+    let (my_shares, size_type) = calculate_safe_size(whale_shares, limit_price, size_multiplier, max_bet_shares);
     if my_shares == 0.0 {
         return format!("SKIPPED_PROBABILITY ({})", size_type);
     }
@@ -677,20 +700,30 @@ fn process_order(
     }
 }
 
-fn calculate_safe_size(whale_shares: f64, price: f64, size_multiplier: f64) -> (f64, SizeType) {
+fn calculate_safe_size(whale_shares: f64, price: f64, size_multiplier: f64, max_bet_shares: Option<f64>) -> (f64, SizeType) {
     let target_scaled = whale_shares * SCALING_RATIO * size_multiplier;
     let safe_price = price.max(0.0001);
     let required_floor = (MIN_CASH_VALUE / safe_price).max(MIN_SHARE_COUNT);
 
-    if target_scaled >= required_floor {
-        return (target_scaled, SizeType::Scaled);
+    // Apply portfolio-based cap if configured
+    let target_capped = match max_bet_shares {
+        Some(max) if max > 0.0 && target_scaled > max => max,
+        _ => target_scaled,
+    };
+
+    if target_capped >= required_floor {
+        // If we capped the size, indicate it in the size type
+        if max_bet_shares.is_some() && target_scaled > target_capped {
+            return (target_capped, SizeType::Capped);
+        }
+        return (target_capped, SizeType::Scaled);
     }
 
     if !USE_PROBABILISTIC_SIZING {
         return (required_floor, SizeType::Scaled);
     }
 
-    let probability = target_scaled / required_floor;
+    let probability = target_capped / required_floor;
     let pct = (probability * 100.0) as u8;
     if rand::thread_rng().r#gen::<f64>() < probability {
         (required_floor, SizeType::ProbHit(pct))
@@ -2127,5 +2160,62 @@ mod tests {
         // Verify topics[2] is null (client-side filtering)
         let topics_array = &parsed["params"][1]["topics"];
         assert_eq!(topics_array[2], Value::Null);
+    }
+
+    // -------------------------------------------------------------------------
+    // Portfolio-based bet size cap tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_calculate_safe_size_no_cap() {
+        // Without a cap, should return scaled size
+        // 10000 shares * 0.02 (SCALING_RATIO) * 1.0 (multiplier) = 200 shares
+        let (shares, size_type) = calculate_safe_size(10000.0, 0.50, 1.0, None);
+        assert!((shares - 200.0).abs() < 0.01);
+        assert!(matches!(size_type, SizeType::Scaled));
+    }
+
+    #[test]
+    fn test_calculate_safe_size_with_cap_not_exceeded() {
+        // Cap is higher than calculated size, should return scaled size
+        // 5000 shares * 0.02 * 1.0 = 100 shares, cap = 200 shares
+        let (shares, size_type) = calculate_safe_size(5000.0, 0.50, 1.0, Some(200.0));
+        assert!((shares - 100.0).abs() < 0.01);
+        assert!(matches!(size_type, SizeType::Scaled)); // Not capped
+    }
+
+    #[test]
+    fn test_calculate_safe_size_with_cap_exceeded() {
+        // Cap is lower than calculated size, should return capped size
+        // 10000 shares * 0.02 * 1.0 = 200 shares, cap = 50 shares
+        let (shares, size_type) = calculate_safe_size(10000.0, 0.50, 1.0, Some(50.0));
+        assert!((shares - 50.0).abs() < 0.01);
+        assert!(matches!(size_type, SizeType::Capped));
+    }
+
+    #[test]
+    fn test_calculate_safe_size_with_multiplier_and_cap() {
+        // 8000 shares * 0.02 * 1.25 (large trade multiplier) = 200 shares
+        // Cap = 100 shares, should cap
+        let (shares, size_type) = calculate_safe_size(8000.0, 0.50, 1.25, Some(100.0));
+        assert!((shares - 100.0).abs() < 0.01);
+        assert!(matches!(size_type, SizeType::Capped));
+    }
+
+    #[test]
+    fn test_calculate_safe_size_cap_at_exactly_scaled() {
+        // Cap equals scaled size exactly, should NOT show as capped
+        // 5000 shares * 0.02 * 1.0 = 100 shares, cap = 100 shares
+        let (shares, size_type) = calculate_safe_size(5000.0, 0.50, 1.0, Some(100.0));
+        assert!((shares - 100.0).abs() < 0.01);
+        assert!(matches!(size_type, SizeType::Scaled)); // Not capped because size == cap
+    }
+
+    #[test]
+    fn test_calculate_safe_size_cap_zero_disables() {
+        // Cap of 0 should effectively disable capping (treated as no cap)
+        let (shares, _size_type) = calculate_safe_size(10000.0, 0.50, 1.0, Some(0.0));
+        // With cap=0, the condition `max > 0.0` fails, so no capping applied
+        assert!((shares - 200.0).abs() < 0.01);
     }
 }
