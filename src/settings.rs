@@ -1,6 +1,7 @@
 /// Settings and configuration management
 /// Handles environment variable loading and validation
 
+use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, Result};
 use std::env;
 use std::path::Path;
@@ -219,6 +220,15 @@ pub struct Config {
     // HTTP API settings
     pub api_enabled: bool,
     pub api_port: u16,
+
+    // Portfolio-based bet sizing
+    /// Maximum bet as percentage of portfolio (e.g., 0.02 = 2%)
+    /// None means no portfolio-based limit (disabled by default)
+    pub max_bet_portfolio_percent: Option<f64>,
+    /// How long to cache portfolio value in seconds (default: 300 = 5 minutes)
+    pub portfolio_cache_secs: u64,
+    /// Wallet address for portfolio tracking (derived from private key)
+    pub wallet_address: String,
 }
 
 impl Config {
@@ -384,6 +394,27 @@ impl Config {
         let traders = TradersConfig::load()
             .map_err(|e| anyhow::anyhow!("Failed to load trader configuration: {}", e))?;
 
+        // Derive wallet address from private key for portfolio tracking
+        let key_with_prefix = format!("0x{}", key_clean);
+        let wallet: PrivateKeySigner = key_with_prefix.parse()
+            .context("Failed to parse private key for wallet address derivation")?;
+        let wallet_address = format!("{}", wallet.address());
+
+        // Parse portfolio-based bet sizing settings
+        // MAX_BET_PORTFOLIO_PERCENT: e.g., "0.02" for 2% of portfolio
+        // Set to empty or don't set to disable
+        let max_bet_portfolio_percent = env::var("MAX_BET_PORTFOLIO_PERCENT")
+            .ok()
+            .and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    trimmed.parse::<f64>().ok()
+                }
+            })
+            .filter(|&p| p > 0.0 && p <= 1.0); // Validate: must be between 0 and 1
+
         Ok(Self {
             private_key,
             funder_address,
@@ -403,6 +434,9 @@ impl Config {
             agg_bypass_shares: env_parse("AGG_BYPASS_SHARES", 4000.0),
             api_enabled: env_parse_bool("API_ENABLED", false),
             api_port: env_parse("API_PORT", 8080),
+            max_bet_portfolio_percent,
+            portfolio_cache_secs: env_parse("PORTFOLIO_CACHE_SECS", 300),
+            wallet_address,
         })
     }
     
@@ -788,6 +822,9 @@ mod tests {
             agg_bypass_shares: 4000.0,
             api_enabled: false,
             api_port: 8080,
+            max_bet_portfolio_percent: None,
+            portfolio_cache_secs: 300,
+            wallet_address: "0x1234".to_string(),
         };
 
         unsafe {
@@ -821,6 +858,9 @@ mod tests {
             agg_bypass_shares: 4000.0,
             api_enabled: false,
             api_port: 8080,
+            max_bet_portfolio_percent: None,
+            portfolio_cache_secs: 300,
+            wallet_address: "0x1234".to_string(),
         };
     }
 
@@ -903,6 +943,9 @@ mod tests {
             agg_bypass_shares: 4000.0,
             api_enabled: false,
             api_port: 8080,
+            max_bet_portfolio_percent: None,
+            portfolio_cache_secs: 300,
+            wallet_address: "0x1234".to_string(),
         };
     }
 
@@ -967,5 +1010,89 @@ mod tests {
         // Verify default behavior when env var doesn't exist
         let enabled: bool = env_parse_bool("API_ENABLED_TEST_DISABLED_NONEXISTENT", false);
         assert!(!enabled, "API should be disabled by default when env var not set");
+    }
+
+    // -------------------------------------------------------------------------
+    // Portfolio Bet Sizing Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_portfolio_bet_limit_disabled_by_default() {
+        // When MAX_BET_PORTFOLIO_PERCENT is not set, it should be None
+        unsafe { std::env::remove_var("MAX_BET_PORTFOLIO_PERCENT"); }
+
+        // Simulate the parsing logic
+        let result = std::env::var("MAX_BET_PORTFOLIO_PERCENT")
+            .ok()
+            .and_then(|v| {
+                let trimmed = v.trim();
+                if trimmed.is_empty() { None } else { trimmed.parse::<f64>().ok() }
+            })
+            .filter(|&p| p > 0.0 && p <= 1.0);
+
+        assert!(result.is_none(), "Portfolio bet limit should be disabled by default");
+    }
+
+    #[test]
+    fn test_portfolio_bet_limit_valid_percent() {
+        unsafe { std::env::set_var("MAX_BET_PORTFOLIO_PERCENT_TEST", "0.02"); }
+
+        let result = std::env::var("MAX_BET_PORTFOLIO_PERCENT_TEST")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|&p| p > 0.0 && p <= 1.0);
+
+        assert_eq!(result, Some(0.02), "Should parse 0.02 (2%) correctly");
+        unsafe { std::env::remove_var("MAX_BET_PORTFOLIO_PERCENT_TEST"); }
+    }
+
+    #[test]
+    fn test_portfolio_bet_limit_rejects_invalid() {
+        // Test negative value
+        unsafe { std::env::set_var("MAX_BET_PORTFOLIO_PERCENT_TEST_NEG", "-0.05"); }
+        let result = std::env::var("MAX_BET_PORTFOLIO_PERCENT_TEST_NEG")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|&p| p > 0.0 && p <= 1.0);
+        assert!(result.is_none(), "Should reject negative values");
+        unsafe { std::env::remove_var("MAX_BET_PORTFOLIO_PERCENT_TEST_NEG"); }
+
+        // Test value > 1.0
+        unsafe { std::env::set_var("MAX_BET_PORTFOLIO_PERCENT_TEST_LARGE", "1.5"); }
+        let result = std::env::var("MAX_BET_PORTFOLIO_PERCENT_TEST_LARGE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|&p| p > 0.0 && p <= 1.0);
+        assert!(result.is_none(), "Should reject values > 1.0");
+        unsafe { std::env::remove_var("MAX_BET_PORTFOLIO_PERCENT_TEST_LARGE"); }
+    }
+
+    #[test]
+    fn test_portfolio_cache_default() {
+        // Default should be 300 seconds (5 minutes)
+        let cache_secs: u64 = env_parse("PORTFOLIO_CACHE_SECS_TEST_NONEXISTENT", 300);
+        assert_eq!(cache_secs, 300, "Portfolio cache should default to 300 seconds");
+    }
+
+    #[test]
+    fn test_portfolio_cache_custom() {
+        unsafe { std::env::set_var("PORTFOLIO_CACHE_SECS_TEST", "60"); }
+        let cache_secs: u64 = env_parse("PORTFOLIO_CACHE_SECS_TEST", 300);
+        assert_eq!(cache_secs, 60, "Should parse custom cache duration");
+        unsafe { std::env::remove_var("PORTFOLIO_CACHE_SECS_TEST"); }
+    }
+
+    #[test]
+    fn test_max_bet_calculation() {
+        // Test the math: 2% of $5000 portfolio = $100 max bet
+        let portfolio_value: f64 = 5000.0;
+        let max_bet_percent: f64 = 0.02;
+        let max_bet_usd: f64 = portfolio_value * max_bet_percent;
+        assert!((max_bet_usd - 100.0).abs() < 0.001);
+
+        // At $0.50 price, $100 max bet = 200 shares max
+        let price: f64 = 0.50;
+        let max_bet_shares: f64 = max_bet_usd / price;
+        assert!((max_bet_shares - 200.0).abs() < 0.001);
     }
 }

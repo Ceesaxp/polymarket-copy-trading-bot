@@ -30,6 +30,7 @@ pub mod market_cache;
 pub mod market_info;
 pub mod models;
 pub mod persistence;
+pub mod portfolio;
 pub mod prices;
 pub mod relayer;
 pub mod risk_guard;
